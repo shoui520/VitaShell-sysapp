@@ -49,11 +49,16 @@ static char *devices[] = {
 const char symlink_header_bytes[SYMLINK_HEADER_SIZE] = {0xF1, 0x1E, 0x00, 0x00};
 
 int allocateReadFile(const char *file, void **buffer) {
+  *buffer = NULL;
   SceUID fd = sceIoOpen(file, SCE_O_RDONLY, 0);
   if (fd < 0)
     return fd;
 
-  int size = sceIoLseek32(fd, 0, SCE_SEEK_END);
+  SceOff size = sceIoLseek(fd, 0, SCE_SEEK_END);
+  if (size < 0 || size > BIG_BUFFER_SIZE) {
+    sceIoClose(fd);
+    return VITASHELL_ERROR_NO_MEMORY;
+  }
   sceIoLseek32(fd, 0, SCE_SEEK_SET);
 
   *buffer = malloc(size);
@@ -66,6 +71,28 @@ int allocateReadFile(const char *file, void **buffer) {
   sceIoClose(fd);
 
   return read;
+}
+
+/* Whole-file consumers must never edit a truncated prefix of a larger file. */
+int ReadFileBounded(const char *file, void *buf, int capacity) {
+  SceUID fd = sceIoOpen(file, SCE_O_RDONLY, 0);
+  if (fd < 0) return fd;
+  SceOff size = sceIoLseek(fd, 0, SCE_SEEK_END);
+  if (size < 0 || size > capacity) {
+    sceIoClose(fd);
+    return VITASHELL_ERROR_NO_MEMORY;
+  }
+  sceIoLseek(fd, 0, SCE_SEEK_SET);
+  int total = 0;
+  while (total < size) {
+    int n = sceIoRead(fd, (char *)buf + total, size - total);
+    if (n <= 0) { sceIoClose(fd); return n < 0 ? n : VITASHELL_ERROR_INTERNAL; }
+    total += n;
+  }
+  char extra;
+  int n = sceIoRead(fd, &extra, 1);
+  sceIoClose(fd);
+  return n < 0 ? n : n ? VITASHELL_ERROR_NO_MEMORY : total;
 }
 
 int ReadFile(const char *file, void *buf, int size) {
@@ -131,6 +158,7 @@ int getFileSha1(const char *file, uint8_t *pSha1Out, FileProcessParam *param) {
 
   // Open up the buffer for copying data into
   void *buf = memalign(4096, TRANSFER_SIZE);
+  if (!buf) { sceIoClose(fd); return VITASHELL_ERROR_NO_MEMORY; }
 
   // Actually take the SHA1 sum
   while (1) {
@@ -183,6 +211,7 @@ int getFileSha1(const char *file, uint8_t *pSha1Out, FileProcessParam *param) {
 
 int getPathInfo(const char *path, uint64_t *size, uint32_t *folders,
                 uint32_t *files, int (* handler)(const char *path)) {
+  if (sceKernelGetThreadStackFreeSize(0) < 16 * 1024) return VITASHELL_ERROR_NO_MEMORY;
   SceUID dfd = sceIoDopen(path);
   if (dfd >= 0) {
     int res = 0;
@@ -193,7 +222,9 @@ int getPathInfo(const char *path, uint64_t *size, uint32_t *folders,
 
       res = sceIoDread(dfd, &dir);
       if (res > 0) {
+        if (strlen(path) + strlen(dir.d_name) + 2 > MAX_PATH_LENGTH) { sceIoDclose(dfd); return VITASHELL_ERROR_INVALID_ARGUMENT; }
         char *new_path = malloc(strlen(path) + strlen(dir.d_name) + 2);
+        if (!new_path) { sceIoDclose(dfd); return VITASHELL_ERROR_NO_MEMORY; }
         snprintf(new_path, MAX_PATH_LENGTH, "%s%s%s", path, hasEndSlash(path) ? "" : "/", dir.d_name);
 
         if (handler && handler(new_path)) {
@@ -247,6 +278,7 @@ int getPathInfo(const char *path, uint64_t *size, uint32_t *folders,
 }
 
 int removePath(const char *path, FileProcessParam *param) {
+  if (sceKernelGetThreadStackFreeSize(0) < 16 * 1024) return VITASHELL_ERROR_NO_MEMORY;
   SceUID dfd = sceIoDopen(path);
   if (dfd >= 0) {
     int res = 0;
@@ -257,7 +289,9 @@ int removePath(const char *path, FileProcessParam *param) {
 
       res = sceIoDread(dfd, &dir);
       if (res > 0) {
+        if (strlen(path) + strlen(dir.d_name) + 2 > MAX_PATH_LENGTH) { sceIoDclose(dfd); return VITASHELL_ERROR_INVALID_ARGUMENT; }
         char *new_path = malloc(strlen(path) + strlen(dir.d_name) + 2);
+        if (!new_path) { sceIoDclose(dfd); return VITASHELL_ERROR_NO_MEMORY; }
         snprintf(new_path, MAX_PATH_LENGTH, "%s%s%s", path, hasEndSlash(path) ? "" : "/", dir.d_name);
 
         if (SCE_S_ISDIR(dir.d_stat.st_mode)) {
@@ -348,13 +382,16 @@ int copyFile(const char *src_path, const char *dst_path, FileProcessParam *param
   if (fdsrc < 0)
     return fdsrc;
 
+  void *buf = memalign(4096, TRANSFER_SIZE);
+  if (!buf) { sceIoClose(fdsrc); return VITASHELL_ERROR_NO_MEMORY; }
+
   SceUID fddst = sceIoOpen(dst_path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
   if (fddst < 0) {
+    free(buf);
     sceIoClose(fdsrc);
     return fddst;
   }
 
-  void *buf = memalign(4096, TRANSFER_SIZE);
 
   while (1) {
     int read = sceIoRead(fdsrc, buf, TRANSFER_SIZE);
@@ -421,6 +458,7 @@ int copyFile(const char *src_path, const char *dst_path, FileProcessParam *param
 }
 
 int copyPath(const char *src_path, const char *dst_path, FileProcessParam *param) {
+  if (sceKernelGetThreadStackFreeSize(0) < 16 * 1024) return VITASHELL_ERROR_NO_MEMORY;
   // The source and destination paths are identical
   if (strcasecmp(src_path, dst_path) == 0) {
     return VITASHELL_ERROR_SRC_AND_DST_IDENTICAL;
@@ -471,10 +509,16 @@ int copyPath(const char *src_path, const char *dst_path, FileProcessParam *param
 
       res = sceIoDread(dfd, &dir);
       if (res > 0) {
+        if (strlen(src_path) + strlen(dir.d_name) + 2 > MAX_PATH_LENGTH) { sceIoDclose(dfd); return VITASHELL_ERROR_INVALID_ARGUMENT; }
         char *new_src_path = malloc(strlen(src_path) + strlen(dir.d_name) + 2);
+        if (!new_src_path) { sceIoDclose(dfd); return VITASHELL_ERROR_NO_MEMORY; }
         snprintf(new_src_path, MAX_PATH_LENGTH, "%s%s%s", src_path, hasEndSlash(src_path) ? "" : "/", dir.d_name);
 
+        if (strlen(dst_path) + strlen(dir.d_name) + 2 > MAX_PATH_LENGTH) { free(new_src_path); sceIoDclose(dfd); return VITASHELL_ERROR_INVALID_ARGUMENT; }
+
         char *new_dst_path = malloc(strlen(dst_path) + strlen(dir.d_name) + 2);
+
+        if (!new_dst_path) { free(new_src_path); sceIoDclose(dfd); return VITASHELL_ERROR_NO_MEMORY; }
         snprintf(new_dst_path, MAX_PATH_LENGTH, "%s%s%s", dst_path, hasEndSlash(dst_path) ? "" : "/", dir.d_name);
 
         int ret = 0;
@@ -504,6 +548,7 @@ int copyPath(const char *src_path, const char *dst_path, FileProcessParam *param
 }
 
 int movePath(const char *src_path, const char *dst_path, int flags, FileProcessParam *param) {
+  if (sceKernelGetThreadStackFreeSize(0) < 16 * 1024) return VITASHELL_ERROR_NO_MEMORY;
   // The source and destination paths are identical
   if (strcasecmp(src_path, dst_path) == 0) {
     return VITASHELL_ERROR_SRC_AND_DST_IDENTICAL;
@@ -565,10 +610,16 @@ int movePath(const char *src_path, const char *dst_path, int flags, FileProcessP
 
         res = sceIoDread(dfd, &dir);
         if (res > 0) {
+          if (strlen(src_path) + strlen(dir.d_name) + 2 > MAX_PATH_LENGTH) { sceIoDclose(dfd); return VITASHELL_ERROR_INVALID_ARGUMENT; }
           char *new_src_path = malloc(strlen(src_path) + strlen(dir.d_name) + 2);
+          if (!new_src_path) { sceIoDclose(dfd); return VITASHELL_ERROR_NO_MEMORY; }
           snprintf(new_src_path, MAX_PATH_LENGTH, "%s%s%s", src_path, hasEndSlash(src_path) ? "" : "/", dir.d_name);
 
+          if (strlen(dst_path) + strlen(dir.d_name) + 2 > MAX_PATH_LENGTH) { free(new_src_path); sceIoDclose(dfd); return VITASHELL_ERROR_INVALID_ARGUMENT; }
+
           char *new_dst_path = malloc(strlen(dst_path) + strlen(dir.d_name) + 2);
+
+          if (!new_dst_path) { free(new_src_path); sceIoDclose(dfd); return VITASHELL_ERROR_NO_MEMORY; }
           snprintf(new_dst_path, MAX_PATH_LENGTH, "%s%s%s", dst_path, hasEndSlash(dst_path) ? "" : "/", dir.d_name);
 
           // Recursive move
@@ -674,14 +725,46 @@ char **getDevices() {
   return devices;
 }
 
-FileListEntry *fileListCopyEntry(FileListEntry *src) {
-  FileListEntry *dst = malloc(sizeof(FileListEntry));
-  if (!dst)
-    return NULL;
+FileListEntry *fileListCreateEntry(const char *name, int folder) {
+  size_t len = strlen(name);
+  if (len + (folder ? 1 : 0) >= MAX_NAME_LENGTH) return NULL;
+  FileListEntry *entry = calloc(1, sizeof(*entry));
+  if (!entry) return NULL;
+  entry->name = malloc(len + 2);
+  if (!entry->name) { free(entry); return NULL; }
+  strcpy(entry->name, name);
+  if (folder && !hasEndSlash(entry->name)) addEndSlash(entry->name);
+  entry->name_length = strlen(entry->name);
+  entry->is_folder = folder;
+  entry->type = folder ? FILE_TYPE_UNKNOWN : getFileType(name);
+  return entry;
+}
 
-  memcpy(dst, src, sizeof(FileListEntry));
-  dst->name = malloc(src->name_length + 1);
-  strcpy(dst->name, src->name);
+void fileListFreeEntry(FileListEntry *entry) {
+  if (!entry) return;
+  if (entry->is_symlink && entry->symlink) {
+    free(entry->symlink->target_path);
+    free(entry->symlink);
+  }
+  free(entry->name);
+  free(entry);
+}
+
+FileListEntry *fileListCopyEntry(FileListEntry *src) {
+  if (!src) return NULL;
+  FileListEntry *dst = malloc(sizeof(*dst));
+  if (!dst) return NULL;
+  *dst = *src;
+  dst->name = strdup(src->name);
+  dst->symlink = NULL;
+  if (!dst->name) { free(dst); return NULL; }
+  if (src->is_symlink && src->symlink) {
+    dst->symlink = malloc(sizeof(*dst->symlink));
+    if (!dst->symlink) { fileListFreeEntry(dst); return NULL; }
+    *dst->symlink = *src->symlink;
+    dst->symlink->target_path = strdup(src->symlink->target_path);
+    if (!dst->symlink->target_path) { fileListFreeEntry(dst); return NULL; }
+  }
   return dst;
 }
 
@@ -877,8 +960,7 @@ int fileListRemoveEntry(FileList *list, FileListEntry *entry) {
   }
 
   list->length--;
-  free(entry->name);
-  free(entry);
+  fileListFreeEntry(entry);
 
   if (list->length == 0) {
     list->head = NULL;
@@ -910,8 +992,7 @@ int fileListRemoveEntryByName(FileList *list, const char *name) {
       }
 
       list->length--;
-      free(entry->name);
-      free(entry);
+      fileListFreeEntry(entry);
 
       if (list->length == 0) {
         list->head = NULL;
@@ -936,8 +1017,7 @@ void fileListEmpty(FileList *list) {
 
   while (entry) {
     FileListEntry *next = entry->next;
-    free(entry->name);
-    free(entry);
+    fileListFreeEntry(entry);
     entry = next;
   }
 
@@ -961,10 +1041,11 @@ int fileListGetDeviceEntries(FileList *list) {
       SceIoStat stat;
       memset(&stat, 0, sizeof(SceIoStat));
       if (sceIoGetstat(devices[i], &stat) >= 0) {
-        FileListEntry *entry = malloc(sizeof(FileListEntry));
+        FileListEntry *entry = calloc(1, sizeof(FileListEntry));
         if (entry) {
           entry->name_length = strlen(devices[i]);
           entry->name = malloc(entry->name_length + 1);
+          if (!entry->name) { free(entry); return VITASHELL_ERROR_NO_MEMORY; }
           strcpy(entry->name, devices[i]);
           entry->is_folder = 1;
           entry->type = FILE_TYPE_UNKNOWN;
@@ -1001,88 +1082,42 @@ int fileListGetDeviceEntries(FileList *list) {
 }
 
 int fileListGetDirectoryEntries(FileList *list, const char *path, int sort) {
-  if (!list)
-    return VITASHELL_ERROR_ILLEGAL_ADDR;
-
+  if (!list) return VITASHELL_ERROR_ILLEGAL_ADDR;
   SceUID dfd = sceIoDopen(path);
-  if (dfd < 0)
-    return dfd;
-
-  FileListEntry *entry = malloc(sizeof(FileListEntry));
-  if (entry) {
-    entry->name_length = strlen(DIR_UP);
-    entry->name = malloc(entry->name_length + 1);
-    strcpy(entry->name, DIR_UP);
-    entry->is_folder = 1;
-    entry->type = FILE_TYPE_UNKNOWN;
-    entry->is_symlink = 0;
+  if (dfd < 0) return dfd;
+  int result = VITASHELL_ERROR_NO_MEMORY;
+  FileListEntry *entry = fileListCreateEntry(DIR_UP, 1);
+  if (!entry) goto done;
+  fileListAddEntry(list, entry, sort);
+  for (;;) {
+    SceIoDirent dir = {0};
+    result = sceIoDread(dfd, &dir);
+    if (result <= 0) break;
+    result = VITASHELL_ERROR_NO_MEMORY;
+    if (list->length >= SYSAPP_MAX_LIST_ENTRIES) break;
+    entry = fileListCreateEntry(dir.d_name, SCE_S_ISDIR(dir.d_stat.st_mode));
+    if (!entry) break;
+    if (!entry->is_folder && dir.d_stat.st_size <= SYMLINK_MAX_SIZE) {
+      char full_path[MAX_PATH_LENGTH];
+      int n = snprintf(full_path, sizeof(full_path), "%s%s%s", path,
+                       hasEndSlash(path) ? "" : "/", dir.d_name);
+      if (n < 0 || n >= sizeof(full_path)) { fileListFreeEntry(entry); break; }
+      Symlink *link = calloc(1, sizeof(*link));
+      if (!link) { fileListFreeEntry(entry); break; }
+      if (resolveSimLink(link, full_path) < 0) free(link);
+      else { entry->is_symlink = 1; entry->symlink = link; }
+    }
+    entry->size = dir.d_stat.st_size;
+    entry->ctime = dir.d_stat.st_ctime;
+    entry->mtime = dir.d_stat.st_mtime;
+    entry->atime = dir.d_stat.st_atime;
+    if (entry->is_folder) list->folders++; else list->files++;
     fileListAddEntry(list, entry, sort);
   }
-
-  int res = 0;
-
-  do {
-    SceIoDirent dir;
-    memset(&dir, 0, sizeof(SceIoDirent));
-
-    res = sceIoDread(dfd, &dir);
-    if (res > 0) {
-      FileListEntry *entry = malloc(sizeof(FileListEntry));
-      if (entry) {
-        entry->is_folder = SCE_S_ISDIR(dir.d_stat.st_mode);
-        entry->is_symlink = 0;
-        entry->symlink = NULL;
-
-        if (entry->is_folder) {
-          entry->name_length = strlen(dir.d_name) + 1;
-          entry->name = malloc(entry->name_length + 1);
-          strcpy(entry->name, dir.d_name);
-          addEndSlash(entry->name);
-          entry->type = FILE_TYPE_UNKNOWN;
-          list->folders++;
-        } else {
-          entry->name_length = strlen(dir.d_name);
-          entry->name = malloc(entry->name_length + 1);
-          strcpy(entry->name, dir.d_name);
-          entry->type = getFileType(entry->name);
-          list->files++;
-
-          if (dir.d_stat.st_size <= SYMLINK_MAX_SIZE) {
-            char *p = malloc(strlen(path) + strlen(dir.d_name) + 2);
-            if (!p) {
-              return VITASHELL_ERROR_INTERNAL;
-            }
-            snprintf(p, MAX_PATH_LENGTH, "%s%s%s",
-                     path, hasEndSlash(path) ? "" : "/", dir.d_name);
-
-            Symlink* symlink = malloc(sizeof(Symlink));
-            if (!symlink) {
-              return VITASHELL_ERROR_INTERNAL;
-            }
-            int res = resolveSimLink(symlink, p);
-            if (res < 0) {
-              if (symlink)
-                free(symlink);
-            } else {
-              entry->is_symlink = 1;
-              entry->symlink = symlink;
-            }
-            free(p);
-          }
-        }
-        entry->size = dir.d_stat.st_size;
-        memcpy(&entry->ctime, (SceDateTime *) &dir.d_stat.st_ctime, sizeof(SceDateTime));
-        memcpy(&entry->mtime, (SceDateTime *) &dir.d_stat.st_mtime, sizeof(SceDateTime));
-        memcpy(&entry->atime, (SceDateTime *) &dir.d_stat.st_atime, sizeof(SceDateTime));
-
-        fileListAddEntry(list, entry, sort);
-      }
-    }
-  } while (res > 0);
-
+done:
   sceIoDclose(dfd);
-
-  return 0;
+  if (result < 0) fileListEmpty(list);
+  return result;
 }
 
 int fileListGetEntries(FileList *list, const char *path, int sort) {

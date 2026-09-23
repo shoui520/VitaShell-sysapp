@@ -417,6 +417,11 @@ int MP3getInfo(){
     if (size < bufferSize * 3)
         bufferSize = size;
     localBuffer = (unsigned char *) malloc(sizeof(unsigned char) * bufferSize);
+    if (!localBuffer || bufferSize <= 0) {
+        free(localBuffer);
+        sceIoClose(fd);
+        return -1;
+    }
     unsigned char *buff = localBuffer;
 
     MP3_channels = 2;

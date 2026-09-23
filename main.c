@@ -48,7 +48,19 @@
 #include "qr.h"
 #include "pfs.h"
 
-int _newlib_heap_size_user = 128 * 1024 * 1024;
+static void startDialogWorker(SceUID thread, SceSize size, void *args) {
+  int result = thread < 0 ? thread : sceKernelStartThread(thread, size, args);
+  if (result < 0) {
+    if (thread >= 0) sceKernelDeleteThread(thread);
+    closeWaitDialog();
+    errorDialog(result);
+  }
+}
+
+int _newlib_heap_size_user = 16 * 1024 * 1024;
+const unsigned int sceUserMainThreadCpuAffinityMask = SCE_KERNEL_CPU_MASK_SYSTEM;
+const int sceUserMainThreadPriority = 0x10000100;
+const unsigned int sceUserMainThreadStackSize = 256 * 1024;
 
 static volatile int dialog_step = DIALOG_STEP_NONE;
 
@@ -237,7 +249,7 @@ void initUsb() {
   if (!path)
     return;
 
-  usbdevice_modid = startUsb("ux0:VitaShell/module/usbdevice.skprx", path, SCE_USBSTOR_VSTOR_TYPE_FAT);
+  usbdevice_modid = startUsb("ux0:VitaShellSys/module/usbdevice.skprx", path, SCE_USBSTOR_VSTOR_TYPE_FAT);
   if (usbdevice_modid >= 0) {
     // Lock power timers
     powerLock();
@@ -366,8 +378,7 @@ int dialogSteps() {
         setDialogStep(DIALOG_STEP_REFRESHING);
 
         SceUID thid = sceKernelCreateThread("refresh_thread", (SceKernelThreadEntry)refresh_thread, 0x40, 0x100000, 0, 0, NULL);
-        if (thid >= 0)
-          sceKernelStartThread(thid, 0, NULL);
+        startDialogWorker(thid, 0, NULL);
       } else if (msg_result == MESSAGE_DIALOG_RESULT_NO) {
         setDialogStep(DIALOG_STEP_NONE);
       }
@@ -382,8 +393,7 @@ int dialogSteps() {
         setDialogStep(DIALOG_STEP_REFRESHING);
 
         SceUID thid = sceKernelCreateThread("license_thread", (SceKernelThreadEntry)license_thread, 0x40, 0x100000, 0, 0, NULL);
-        if (thid >= 0)
-          sceKernelStartThread(thid, 0, NULL);
+        startDialogWorker(thid, 0, NULL);
       } else if (msg_result == MESSAGE_DIALOG_RESULT_NO) {
         setDialogStep(DIALOG_STEP_NONE);
       }
@@ -518,8 +528,7 @@ int dialogSteps() {
         setDialogStep(DIALOG_STEP_COPYING);
 
         SceUID thid = sceKernelCreateThread("copy_thread", (SceKernelThreadEntry)copy_thread, 0x40, 0x100000, 0, 0, NULL);
-        if (thid >= 0)
-          sceKernelStartThread(thid, sizeof(CopyArguments), &args);
+        startDialogWorker(thid, sizeof(CopyArguments), &args);
       }
 
       break;
@@ -548,8 +557,7 @@ int dialogSteps() {
         setDialogStep(DIALOG_STEP_DELETING);
 
         SceUID thid = sceKernelCreateThread("delete_thread", (SceKernelThreadEntry)delete_thread, 0x40, 0x100000, 0, 0, NULL);
-        if (thid >= 0)
-          sceKernelStartThread(thid, sizeof(DeleteArguments), &args);
+        startDialogWorker(thid, sizeof(DeleteArguments), &args);
       }
 
       break;
@@ -578,8 +586,7 @@ int dialogSteps() {
         setDialogStep(DIALOG_STEP_EXPORTING);
 
         SceUID thid = sceKernelCreateThread("export_thread", (SceKernelThreadEntry)export_thread, 0x40, 0x100000, 0, 0, NULL);
-        if (thid >= 0)
-          sceKernelStartThread(thid, sizeof(ExportArguments), &args);
+        startDialogWorker(thid, sizeof(ExportArguments), &args);
       }
 
       break;
@@ -730,8 +737,7 @@ int dialogSteps() {
           setDialogStep(DIALOG_STEP_COMPRESSING);
 
           SceUID thid = sceKernelCreateThread("compress_thread", (SceKernelThreadEntry)compress_thread, 0x40, 0x100000, 0, 0, NULL);
-          if (thid >= 0)
-            sceKernelStartThread(thid, sizeof(CompressArguments), &args);
+          startDialogWorker(thid, sizeof(CompressArguments), &args);
         }
       } else if (ime_result == IME_DIALOG_RESULT_CANCELED) {
         setDialogStep(DIALOG_STEP_NONE);
@@ -774,8 +780,7 @@ int dialogSteps() {
 
         // Create a thread to run out actual sum
         SceUID thid = sceKernelCreateThread("hash_thread", (SceKernelThreadEntry)hash_thread, 0x40, 0x100000, 0, 0, NULL);
-        if (thid >= 0)
-          sceKernelStartThread(thid, sizeof(HashArguments), &args);
+        startDialogWorker(thid, sizeof(HashArguments), &args);
       }
 
       break;
@@ -815,8 +820,7 @@ int dialogSteps() {
         setDialogStep(DIALOG_STEP_INSTALLING);
 
         SceUID thid = sceKernelCreateThread("install_thread", (SceKernelThreadEntry)install_thread, 0x40, 0x100000, 0, 0, NULL);
-        if (thid >= 0)
-          sceKernelStartThread(thid, sizeof(InstallArguments), &args);
+        startDialogWorker(thid, sizeof(InstallArguments), &args);
       }
 
       break;
@@ -831,8 +835,7 @@ int dialogSteps() {
         setDialogStep(DIALOG_STEP_INSTALLING);
 
         SceUID thid = sceKernelCreateThread("install_thread", (SceKernelThreadEntry)install_thread, 0x40, 0x100000, 0, 0, NULL);
-        if (thid >= 0)
-          sceKernelStartThread(thid, sizeof(InstallArguments), &args);
+        startDialogWorker(thid, sizeof(InstallArguments), &args);
       }
 
       break;
@@ -884,8 +887,7 @@ int dialogSteps() {
         setDialogStep(DIALOG_STEP_EXTRACTING);
 
         SceUID thid = sceKernelCreateThread("update_extract_thread", (SceKernelThreadEntry)update_extract_thread, 0x40, 0x100000, 0, 0, NULL);
-        if (thid >= 0)
-          sceKernelStartThread(thid, 0, NULL);
+        startDialogWorker(thid, 0, NULL);
       }
 
       break;
@@ -925,7 +927,7 @@ int dialogSteps() {
     
     case DIALOG_STEP_EXTRACTED:
     {
-			removePath("ux0:patch/VITASHELL", NULL);
+			removePath("ux0:patch/VTSYS0001", NULL);
       launchAppByUriExit("VSUPDATER");
       setDialogStep(DIALOG_STEP_NONE);
       break;
@@ -952,8 +954,7 @@ int dialogSteps() {
         setDialogStep(DIALOG_STEP_QR_WAITING);
         stopQR();
         SceUID thid = sceKernelCreateThread("qr_scan_thread", (SceKernelThreadEntry)qr_scan_thread, 0x10000100, 0x100000, 0, 0, NULL);
-        if (thid >= 0)
-          sceKernelStartThread(thid, 0, NULL);
+        startDialogWorker(thid, 0, NULL);
       }
       
       break;
@@ -1086,8 +1087,7 @@ int dialogSteps() {
           setDialogStep(DIALOG_STEP_ADHOC_SENDING);
 
           SceUID thid = sceKernelCreateThread("send_thread", (SceKernelThreadEntry)send_thread, 0x40, 0x100000, 0, 0, NULL);
-          if (thid >= 0)
-            sceKernelStartThread(thid, sizeof(SendArguments), &args);
+          startDialogWorker(thid, sizeof(SendArguments), &args);
         } else if (strcmp(adhocReceiveClientReponse(), "NO") == 0) {
           initMessageDialog(SCE_MSG_DIALOG_BUTTON_TYPE_CANCEL, language_container[ADHOC_CLIENT_DECLINED]);
           setDialogStep(DIALOG_STEP_ADHOC_SEND_CLIENT_DECLINED);
@@ -1167,8 +1167,7 @@ int dialogSteps() {
           setDialogStep(DIALOG_STEP_ADHOC_RECEIVING);
 
           SceUID thid = sceKernelCreateThread("receive_thread", (SceKernelThreadEntry)receive_thread, 0x40, 0x100000, 0, 0, NULL);
-          if (thid >= 0)
-            sceKernelStartThread(thid, sizeof(ReceiveArguments), &args);
+          startDialogWorker(thid, sizeof(ReceiveArguments), &args);
         }
       } else if (msg_result == MESSAGE_DIALOG_RESULT_NO) {
         adhocSendServerResponse("NO"); // Do not check result
@@ -1231,6 +1230,8 @@ void ftpvita_PROM(ftpvita_client_info_t *client) {
 }
 
 int main(int argc, const char *argv[]) {  
+  sysappCheckRuntime();
+
   // Create mutex
   sceKernelCreateLwMutex(&dialog_mutex, "dialog_mutex", 2, 0, NULL);
 
@@ -1251,12 +1252,7 @@ int main(int argc, const char *argv[]) {
   initContextMenuWidth();
   initTextContextMenuWidth();
   
-  // Automatic network update
-  if (!vitashell_config.disable_autoupdate) {
-    SceUID thid = sceKernelCreateThread("network_update_thread", network_update_thread, 0x10000100, 0x100000, 0, 0, NULL);
-    if (thid >= 0)
-      sceKernelStartThread(thid, 0, NULL);
-  }
+  // The upstream updater installs the regular VitaShell title.
 
   // File browser
   browserMain();

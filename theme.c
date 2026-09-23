@@ -249,23 +249,26 @@ void loadTheme() {
     };
 
     // Load theme config
-    readConfig("ux0:VitaShell/theme/theme.txt", theme_entries, sizeof(theme_entries) / sizeof(ConfigEntry));
+    readConfig("ux0:VitaShellSys/theme/theme.txt", theme_entries, sizeof(theme_entries) / sizeof(ConfigEntry));
 
     if (theme_name) {
       // Load colors config
-      snprintf(path, MAX_PATH_LENGTH, "ux0:VitaShell/theme/%s/colors.txt", theme_name);
+      snprintf(path, MAX_PATH_LENGTH, "ux0:VitaShellSys/theme/%s/colors.txt", theme_name);
       readConfig(path, colors_entries, sizeof(colors_entries) / sizeof(ConfigEntry));
       
       // Font
-      snprintf(path, MAX_PATH_LENGTH, "ux0:VitaShell/theme/%s/font.pgf", theme_name);
-      font = vita2d_load_custom_pgf(path);
+      snprintf(path, MAX_PATH_LENGTH, "ux0:VitaShellSys/theme/%s/font.pgf", theme_name);
+      SceIoStat font_stat;
+      if (sceIoGetstat(path, &font_stat) >= 0 && font_stat.st_size <= 512 * 1024)
+        font = vita2d_load_custom_pgf(path);
       
       // Load theme
       for (i = 0; i < N_THEME_IMAGES; i++) {
-        snprintf(path, MAX_PATH_LENGTH, "ux0:VitaShell/theme/%s/%s", theme_name, theme_images[i].name);
+        snprintf(path, MAX_PATH_LENGTH, "ux0:VitaShellSys/theme/%s/%s", theme_name, theme_images[i].name);
         if (theme_images[i].texture && *(theme_images[i].texture) == NULL)
-          *(theme_images[i].texture) = vita2d_load_PNG_file(path);
+          *(theme_images[i].texture) = sysappLoadImageFile(path);
       }
+      free(theme_name);
     }
   }
 
@@ -273,64 +276,17 @@ void loadTheme() {
   for (i = 0; i < N_THEME_IMAGES; i++) {
     if (theme_images[i].texture && *(theme_images[i].texture) == NULL && theme_images[i].default_buf)
       *(theme_images[i].texture) = vita2d_load_PNG_buffer(theme_images[i].default_buf);
+    if (theme_images[i].texture && theme_images[i].default_buf && !*(theme_images[i].texture))
+      sceKernelExitProcess(VITASHELL_ERROR_NO_MEMORY);
   }
 
-  // Load default pngs
-  if (!dialog_image) {
-    dialog_image = vita2d_create_empty_texture(SCREEN_WIDTH, SCREEN_HEIGHT);
-    void *data = vita2d_texture_get_datap(dialog_image);
-
-    int y;
-    for (y = 0; y < SCREEN_HEIGHT; y++) {
-      int x;
-      for (x = 0; x < SCREEN_WIDTH; x++) {
-        ((uint32_t *)data)[x + SCREEN_WIDTH * y] = DIALOG_BG_COLOR;
-      }
-    }
-  }
-
-  if (!context_image) {
-    context_image = vita2d_create_empty_texture(SCREEN_WIDTH, SCREEN_HEIGHT);
-    void *data = vita2d_texture_get_datap(context_image);
-
-    int y;
-    for (y = 0; y < SCREEN_HEIGHT; y++) {
-      int x;
-      for (x = 0; x < SCREEN_WIDTH; x++) {
-        ((uint32_t *)data)[x + SCREEN_WIDTH * y] = CONTEXT_MENU_COLOR;
-      }
-    }
-  }
-
-  if (!context_more_image) {
-    context_more_image = vita2d_create_empty_texture(SCREEN_WIDTH, SCREEN_HEIGHT);
-    void *data = vita2d_texture_get_datap(context_more_image);
-
-    int y;
-    for (y = 0; y < SCREEN_HEIGHT; y++) {
-      int x;
-      for (x = 0; x < SCREEN_WIDTH; x++) {
-        ((uint32_t *)data)[x + SCREEN_WIDTH * y] = CONTEXT_MENU_MORE_COLOR;
-      }
-    }
-  }
-
-  if (!settings_image) {
-    settings_image = vita2d_create_empty_texture(SCREEN_WIDTH, SCREEN_HEIGHT);
-    void *data = vita2d_texture_get_datap(settings_image);
-
-    int y;
-    for (y = 0; y < SCREEN_HEIGHT; y++) {
-      int x;
-      for (x = 0; x < SCREEN_WIDTH; x++) {
-        ((uint32_t *)data)[x + SCREEN_WIDTH * y] = SETTINGS_MENU_COLOR;
-      }
-    }
-  }
+  // Solid backgrounds are drawn as rectangles, without full-screen textures.
 
   // Load system fonts
   if (!font)
     font = loadSystemFonts();
+
+  if (!font) sceKernelExitProcess(VITASHELL_ERROR_NO_MEMORY);
 
   // Font size cache
   for (i = 0; i < 256; i++) {

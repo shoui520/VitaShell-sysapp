@@ -24,9 +24,11 @@ static char* getStringFromRegmatch(char* source,size_t so,size_t eo)
 
     if(wordlength < 2){
         word = malloc(sizeof(char));
+        if (!word) return NULL;
         word[0] = '\0';
     }else{
         word = malloc(sizeof(char) * (wordlength + 1));
+        if (!word) return NULL;
         memcpy((void*)word,(void*)(source + so),wordlength);//copy string
         word[sizeof(char) * (wordlength)] = '\0';
     }
@@ -37,15 +39,14 @@ Lyrics* lrcParseLoadWithFile(char* lrcfilepath)
 {
     int filesize = getFileSize(lrcfilepath);
 
-    if(filesize < 0)
-        return NULL;
-
-    char lrcbuffer[filesize];
-
-    if(ReadFile(lrcfilepath,(void*)lrcbuffer,filesize) < 0)
-        return NULL;
-
-    return lrcParseLoadWithBuffer(lrcbuffer);
+    if (filesize < 0 || filesize > 64 * 1024) return NULL;
+    char *lrcbuffer = calloc(1, filesize + 1);
+    if (!lrcbuffer) return NULL;
+    Lyrics *lyrics = NULL;
+    if (ReadFile(lrcfilepath, lrcbuffer, filesize) == filesize)
+        lyrics = lrcParseLoadWithBuffer(lrcbuffer);
+    free(lrcbuffer);
+    return lyrics;
 }
 
 Lyrics* lrcParseLoadWithBuffer(char* buffer)
@@ -62,7 +63,8 @@ Lyrics* lrcParseLoadWithBuffer(char* buffer)
 
     Lyricsline* lrcline = malloc(sizeof(Lyricsline) * MAX_LYRICSLINE);
 
-    while(1){
+    if (!lrcline) { regfree(&preg); return NULL; }
+    while (lines < MAX_LYRICSLINE) {
         if(regexec(&preg,buffer, 5, pm, REG_NOTEOL) != REG_NOMATCH){
 
             char* m = getStringFromRegmatch(buffer,pm[1].rm_so,pm[1].rm_eo);
@@ -71,6 +73,10 @@ Lyrics* lrcParseLoadWithBuffer(char* buffer)
             char* word = getStringFromRegmatch(buffer,pm[4].rm_so,pm[4].rm_eo);
 
 
+            if (!m || !s || !ms || !word) {
+                free(m); free(s); free(ms); free(word);
+                goto failed;
+            }
             lrcline[lines].m = atol(m);
             lrcline[lines].s = atoi(s);
             lrcline[lines].ms = atoi(ms);
@@ -86,13 +92,18 @@ Lyrics* lrcParseLoadWithBuffer(char* buffer)
         }else{break;}
     }
 
-    regfree(&preg);
-
     Lyrics* lyrics = malloc(sizeof(Lyrics));
+    if (!lyrics) goto failed;
+    regfree(&preg);
     lyrics->lrclines = lrcline;
     lyrics->lyricscount = lines;
 
     return lyrics;
+failed:
+    regfree(&preg);
+    for (uint32_t i = 0; i < lines; ++i) free(lrcline[i].word);
+    free(lrcline);
+    return NULL;
 }
 
 void lrcParseClose(Lyrics* lyrics)
@@ -100,7 +111,6 @@ void lrcParseClose(Lyrics* lyrics)
     if(!lyrics)
         return;
 
-    lyrics->lyricscount = 0;
     int i;
     for(i = 0;i < lyrics->lyricscount ; ++i){
         if(lyrics->lrclines[i].word){

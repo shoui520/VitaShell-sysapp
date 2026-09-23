@@ -70,6 +70,10 @@ void closeWaitDialog() {
 }
 
 void errorDialog(int error) {
+  if (error == (int)VITASHELL_ERROR_SYSAPP_UNAVAILABLE) {
+    infoDialog("Use regular VitaShell for USB storage or switching ux0.\nVitaShell Sys keeps the suspended application open.");
+    return;
+  }
   if (error < 0) {
     initMessageDialog(SCE_MSG_DIALOG_BUTTON_TYPE_OK, language_container[ERROR], error);
     setDialogStep(DIALOG_STEP_ERROR);

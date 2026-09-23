@@ -364,6 +364,7 @@ void drawPropertyDialog() {
   if (property_dialog.status == PROPERTY_DIALOG_CLOSED)
     return;
 
+  if (dialog_image) {
   // Dialog background
   float dialog_width = vita2d_texture_get_width(dialog_image);
   float dialog_height = vita2d_texture_get_height(dialog_image);
@@ -372,6 +373,11 @@ void drawPropertyDialog() {
                                            property_dialog.scale * (property_dialog.width/dialog_width),
                                            property_dialog.scale * (property_dialog.height/dialog_height),
                                            0.0f, dialog_width / 2.0f, dialog_height / 2.0f);
+  } else {
+    vita2d_draw_rectangle(property_dialog.x + property_dialog.width * (1.0f - property_dialog.scale) / 2.0f,
+      property_dialog.y + property_dialog.height * (1.0f - property_dialog.scale) / 2.0f,
+      property_dialog.width * property_dialog.scale, property_dialog.height * property_dialog.scale, DIALOG_BG_COLOR);
+  }
 
   // Easing out
   if (property_dialog.status == PROPERTY_DIALOG_CLOSING) {

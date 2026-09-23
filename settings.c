@@ -61,11 +61,6 @@ SettingsMenuOption main_settings[] = {
   // { VITASHELL_SETTINGS_LANGUAGE,     SETTINGS_OPTION_TYPE_BOOLEAN, NULL, NULL, 0, NULL, 0, &language },
   { VITASHELL_SETTINGS_THEME,           SETTINGS_OPTION_TYPE_OPTIONS, NULL, NULL, 0, NULL, 0, NULL },
   
-  { VITASHELL_SETTINGS_USBDEVICE,       SETTINGS_OPTION_TYPE_OPTIONS, NULL, NULL, 0,
-    usbdevice_options, sizeof(usbdevice_options) / sizeof(char **), &vitashell_config.usbdevice },
-  { VITASHELL_SETTINGS_SELECT_BUTTON,   SETTINGS_OPTION_TYPE_OPTIONS, NULL, NULL, 0,
-    select_button_options, sizeof(select_button_options) / sizeof(char **), &vitashell_config.select_button },
-  { VITASHELL_SETTINGS_NO_AUTO_UPDATE,  SETTINGS_OPTION_TYPE_BOOLEAN, NULL, NULL, 0, NULL, 0, &vitashell_config.disable_autoupdate },
   { VITASHELL_SETTINGS_WARNING_MESSAGE, SETTINGS_OPTION_TYPE_BOOLEAN, NULL, NULL, 0, NULL, 0, &vitashell_config.disable_warning },
 
   { VITASHELL_SETTINGS_RESTART_SHELL,   SETTINGS_OPTION_TYPE_CALLBACK, (void *)restartShell, NULL, 0, NULL, 0, NULL },
@@ -87,12 +82,14 @@ static SettingsMenu settings_menu;
 void loadSettingsConfig() {
   // Load settings config file
   memset(&vitashell_config, 0, sizeof(VitaShellConfig));
-  readConfig("ux0:VitaShell/settings.txt", settings_entries, sizeof(settings_entries) / sizeof(ConfigEntry));
+  readConfig("ux0:VitaShellSys/settings.txt", settings_entries, sizeof(settings_entries) / sizeof(ConfigEntry));
+  vitashell_config.select_button = SELECT_BUTTON_MODE_FTP;
+  vitashell_config.disable_autoupdate = 1;
 }
 
 void saveSettingsConfig() {
   // Save settings config file
-  writeConfig("ux0:VitaShell/settings.txt", settings_entries, sizeof(settings_entries) / sizeof(ConfigEntry));
+  writeConfig("ux0:VitaShellSys/settings.txt", settings_entries, sizeof(settings_entries) / sizeof(ConfigEntry));
 
   if (sceKernelGetModel() == SCE_KERNEL_MODEL_VITATV) {
     vitashell_config.select_button = SELECT_BUTTON_MODE_FTP;
@@ -140,9 +137,12 @@ void initSettingsMenu() {
   select_button_options[1] = language_container[VITASHELL_SETTINGS_SELECT_BUTTON_FTP];
   
   theme_options = malloc(MAX_THEMES * sizeof(char *));
+  if (!theme_options) sceKernelExitProcess(VITASHELL_ERROR_NO_MEMORY);
   
-  for (i = 0; i < MAX_THEMES; i++)
+  for (i = 0; i < MAX_THEMES; i++) {
     theme_options[i] = malloc(MAX_THEME_LENGTH);
+    if (!theme_options[i]) sceKernelExitProcess(VITASHELL_ERROR_NO_MEMORY);
+  }
 }
 
 void openSettingsMenu() {
@@ -154,7 +154,7 @@ void openSettingsMenu() {
   if (theme_name)
     free(theme_name);
 
-  readConfig("ux0:VitaShell/theme/theme.txt", theme_entries, sizeof(theme_entries) / sizeof(ConfigEntry));
+  readConfig("ux0:VitaShellSys/theme/theme.txt", theme_entries, sizeof(theme_entries) / sizeof(ConfigEntry));
 
   // Get theme index in main tab
   int theme_index = -1;
@@ -169,7 +169,7 @@ void openSettingsMenu() {
 
   // Find all themes
   if (theme_index >= 0) {
-    SceUID dfd = sceIoDopen("ux0:VitaShell/theme");
+    SceUID dfd = sceIoDopen("ux0:VitaShellSys/theme");
     if (dfd >= 0) {
       theme_count = 0;
       theme = 0;
@@ -212,7 +212,7 @@ void closeSettingsMenu() {
       
     // Save theme config file
     theme_entries[0].value = &theme_options[theme];
-    writeConfig("ux0:VitaShell/theme/theme.txt", theme_entries, sizeof(theme_entries) / sizeof(ConfigEntry));
+    writeConfig("ux0:VitaShellSys/theme/theme.txt", theme_entries, sizeof(theme_entries) / sizeof(ConfigEntry));
     theme_entries[0].value = (void *)&theme_name;
   }
 }
@@ -244,7 +244,10 @@ void drawSettingsMenu() {
   }
 
   // Draw settings menu
-  vita2d_draw_texture(settings_image, 0.0f, SCREEN_HEIGHT - settings_menu.cur_pos);
+  if (settings_image)
+    vita2d_draw_texture(settings_image, 0.0f, SCREEN_HEIGHT - settings_menu.cur_pos);
+  else
+    vita2d_draw_rectangle(0.0f, SCREEN_HEIGHT - settings_menu.cur_pos, SCREEN_WIDTH, SCREEN_HEIGHT, SETTINGS_MENU_COLOR);
 
   float y = SCREEN_HEIGHT - settings_menu.cur_pos + START_Y;
 

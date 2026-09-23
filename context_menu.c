@@ -85,10 +85,13 @@ void drawContextMenu() {
   // Draw context menu
   if (ctx_menu_mode != CONTEXT_MENU_CLOSED) {
     if (!cur_ctx->parent) {
-      vita2d_draw_texture_part(context_image, SCREEN_WIDTH - ctx_cur_menu_width, 0.0f, 0.0f, 0.0f, ctx_cur_menu_width, SCREEN_HEIGHT);
+      if (context_image) vita2d_draw_texture_part(context_image, SCREEN_WIDTH - ctx_cur_menu_width, 0.0f, 0.0f, 0.0f, ctx_cur_menu_width, SCREEN_HEIGHT);
+      else vita2d_draw_rectangle(SCREEN_WIDTH - ctx_cur_menu_width, 0.0f, ctx_cur_menu_width, SCREEN_HEIGHT, CONTEXT_MENU_COLOR);
     } else {
-      vita2d_draw_texture_part(context_image, SCREEN_WIDTH - ctx_cur_menu_width, 0.0f, 0.0f, 0.0f, cur_ctx->parent->max_width, SCREEN_HEIGHT);
-      vita2d_draw_texture_part(context_more_image, SCREEN_WIDTH - ctx_cur_menu_width + cur_ctx->parent->max_width, 0.0f, 0.0f, 0.0f, cur_ctx->max_width, SCREEN_HEIGHT);
+      if (context_image) vita2d_draw_texture_part(context_image, SCREEN_WIDTH - ctx_cur_menu_width, 0.0f, 0.0f, 0.0f, cur_ctx->parent->max_width, SCREEN_HEIGHT);
+      else vita2d_draw_rectangle(SCREEN_WIDTH - ctx_cur_menu_width, 0.0f, cur_ctx->parent->max_width, SCREEN_HEIGHT, CONTEXT_MENU_COLOR);
+      if (context_more_image) vita2d_draw_texture_part(context_more_image, SCREEN_WIDTH - ctx_cur_menu_width + cur_ctx->parent->max_width, 0.0f, 0.0f, 0.0f, cur_ctx->max_width, SCREEN_HEIGHT);
+      else vita2d_draw_rectangle(SCREEN_WIDTH - ctx_cur_menu_width + cur_ctx->parent->max_width, 0.0f, cur_ctx->max_width, SCREEN_HEIGHT, CONTEXT_MENU_MORE_COLOR);
     }
 
     ContextMenu *ctx = cur_ctx;

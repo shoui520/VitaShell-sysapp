@@ -28,45 +28,10 @@ static vita2d_texture *loadImage(const char *file, int type, char *buffer) {
   vita2d_texture *tex = NULL;
 
   if (isInArchive()) {
-    int size = 0;
-
-    if (isInArchive()) {
-      size = ReadArchiveFile(file, buffer, BIG_BUFFER_SIZE);
-    } else {
-      size = ReadFile(file, buffer, BIG_BUFFER_SIZE);
-    }
-
-    if (size <= 0) {
-      return NULL;
-    }
-
-    switch (type) {
-      case FILE_TYPE_BMP:
-        tex = vita2d_load_BMP_buffer(buffer);
-        break;
-      
-      case FILE_TYPE_PNG:
-        tex = vita2d_load_PNG_buffer(buffer);
-        break;
-        
-      case FILE_TYPE_JPEG:
-        tex = vita2d_load_JPEG_buffer(buffer, size);
-        break;
-    }
+    int size = ReadArchiveFileBounded(file, buffer, BIG_BUFFER_SIZE);
+    if (size > 0) tex = sysappLoadImageBuffer(buffer, size);
   } else {
-    switch (type) {
-      case FILE_TYPE_BMP:
-        tex = vita2d_load_BMP_file(file);
-        break;
-      
-      case FILE_TYPE_PNG:
-        tex = vita2d_load_PNG_file(file);
-        break;
-        
-      case FILE_TYPE_JPEG:
-        tex = vita2d_load_JPEG_file(file);
-        break;
-    }
+    tex = sysappLoadImageFile(file);
   }
 
   // Set bilinear filter

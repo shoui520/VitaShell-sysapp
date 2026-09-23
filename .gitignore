@@ -8,3 +8,5 @@
 *.sfo
 *.velf
 build
+build-sysapp/
+release-sysapp/

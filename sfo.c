@@ -110,9 +110,9 @@ int SFOReader(const char *file) {
   int size = 0;
 
   if (isInArchive()) {
-    size = ReadArchiveFile(file, buffer, BIG_BUFFER_SIZE);
+    size = ReadArchiveFileBounded(file, buffer, BIG_BUFFER_SIZE);
   } else {
-    size = ReadFile(file, buffer, BIG_BUFFER_SIZE);
+    size = ReadFileBounded(file, buffer, BIG_BUFFER_SIZE);
   }
 
   if (size <= 0) {
@@ -121,8 +121,10 @@ int SFOReader(const char *file) {
   }
 
   SfoHeader *sfo_header = (SfoHeader *)buffer;
-  if (sfo_header->magic != SFO_MAGIC)
+  if (size < sizeof(*sfo_header) || sfo_header->magic != SFO_MAGIC) {
+    free(buffer);
     return VITASHELL_ERROR_INVALID_MAGIC;
+  }
 
   int base_pos = 0, rel_pos = 0;
 

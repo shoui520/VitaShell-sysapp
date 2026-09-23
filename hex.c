@@ -82,9 +82,9 @@ int hexViewer(const char *file) {
   int size = 0;
 
   if (isInArchive()) {
-    size = ReadArchiveFile(file, buffer, BIG_BUFFER_SIZE);
+    size = ReadArchiveFileBounded(file, buffer, BIG_BUFFER_SIZE);
   } else {
-    size = ReadFile(file, buffer, BIG_BUFFER_SIZE);
+    size = ReadFileBounded(file, buffer, BIG_BUFFER_SIZE);
   }
 
   if (size <= 0) {
@@ -109,6 +109,11 @@ int hexViewer(const char *file) {
   int i;
   for (i = 0; i < 0x10; i++) {
     HexListEntry *entry = malloc(sizeof(HexListEntry));
+    if (!entry) {
+      hexListEmpty(&list);
+      free(buffer);
+      return VITASHELL_ERROR_NO_MEMORY;
+    }
     memcpy(entry->data, buffer + i * 0x10, 0x10);
     hexListAddEntry(&list, entry);
   }

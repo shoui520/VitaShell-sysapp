@@ -42,6 +42,7 @@
 #include "utils.h"
 
 static int qr_enabled;
+static volatile int qr_running;
 
 static struct quirc *qr;
 static uint32_t* qr_data;
@@ -61,11 +62,9 @@ static int qr_scanned = 0;
 static SceUID thid;
 
 int qr_thread() {
-  qr = quirc_new();
-  quirc_resize(qr, CAM_WIDTH, CAM_HEIGHT);
   qr_next = 1;
-  while (1) {
-    sceKernelDelayThread(10);
+  while (qr_running) {
+    sceKernelDelayThread(10000);
     if (qr_next == 0 && qr_scanned == 0) {
       uint8_t *image;
       int w, h;
@@ -87,8 +86,9 @@ int qr_thread() {
         err = quirc_decode(&code, &data);
         if (err) {
         } else {
-          memcpy(last_qr, data.payload, data.payload_len);
-          last_qr_len = data.payload_len;
+          last_qr_len = MIN(data.payload_len, sizeof(last_qr) - 1);
+          memcpy(last_qr, data.payload, last_qr_len);
+          last_qr[last_qr_len] = 0;
           qr_scanned = 1;
         }
       } else {
@@ -98,6 +98,7 @@ int qr_thread() {
       sceKernelDelayThread(250000);
     }
   }
+  return sceKernelExitDeleteThread(0);
 }
 
 int qr_scan_thread(SceSize args, void *argp) {
@@ -271,9 +272,13 @@ NETWORK_FAILURE:
 
 int initQR() {
   SceKernelMemBlockType orig = vita2d_texture_get_alloc_memblock_type();
-  vita2d_texture_set_alloc_memblock_type(SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW);
+  vita2d_texture_set_alloc_memblock_type(SCE_KERNEL_MEMBLOCK_TYPE_USER_RW);
   camera_tex = vita2d_create_empty_texture(CAM_WIDTH, CAM_HEIGHT);
   vita2d_texture_set_alloc_memblock_type(orig);
+  if (!camera_tex) {
+    qr_enabled = 0;
+    return VITASHELL_ERROR_NO_MEMORY;
+  }
   
   cam_info.size = sizeof(SceCameraInfo);
   cam_info.format = SCE_CAMERA_FORMAT_ABGR;
@@ -288,18 +293,44 @@ int initQR() {
   if (sceCameraOpen(1, &cam_info) < 0) {
     qr_enabled = 0;
     vita2d_free_texture(camera_tex);
+    camera_tex = NULL;
     return -1;
   }
   
+  qr = quirc_new();
+  if (!qr || quirc_resize(qr, CAM_WIDTH, CAM_HEIGHT) < 0) {
+    if (qr) quirc_destroy(qr);
+    qr = NULL;
+    sceCameraClose(1);
+    vita2d_free_texture(camera_tex);
+    camera_tex = NULL;
+    return VITASHELL_ERROR_NO_MEMORY;
+  }
+  qr_running = 1;
   thid = sceKernelCreateThread("qr_decode_thread", qr_thread, 0x40, 0x100000, 0, 0, NULL);
-  if (thid >= 0) sceKernelStartThread(thid, 0, NULL);
+  if (thid < 0 || sceKernelStartThread(thid, 0, NULL) < 0) {
+    if (thid >= 0) sceKernelDeleteThread(thid);
+    qr_running = 0;
+    quirc_destroy(qr);
+    qr = NULL;
+    sceCameraClose(1);
+    vita2d_free_texture(camera_tex);
+    camera_tex = NULL;
+    qr_enabled = 0;
+    return -1;
+  }
   qr_enabled = 1;
   return 0;
 }
 
 int finishQR() {
-  sceKernelDeleteThread(thid);
+  if (!camera_tex) return 0;
+  qr_running = 0;
+  sceKernelWaitThreadEnd(thid, NULL, NULL);
+  quirc_destroy(qr);
+  qr = NULL;
   vita2d_free_texture(camera_tex);
+  camera_tex = NULL;
   sceCameraClose(1);
   quirc_destroy(qr);
   return 0;

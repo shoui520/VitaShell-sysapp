@@ -105,6 +105,7 @@ typedef struct {
 } FileList;
 
 int allocateReadFile(const char *file, void **buffer);
+int ReadFileBounded(const char *file, void *buf, int capacity);
 int ReadFile(const char *file, void *buf, int size);
 int WriteFile(const char *file, const void *buf, int size);
 
@@ -128,6 +129,8 @@ int getFileType(const char *file);
 int getNumberOfDevices();
 char **getDevices();
 
+FileListEntry *fileListCreateEntry(const char *name, int folder);
+void fileListFreeEntry(FileListEntry *entry);
 FileListEntry *fileListCopyEntry(FileListEntry *src);
 FileListEntry *fileListFindEntry(FileList *list, const char *name);
 FileListEntry *fileListGetNthEntry(FileList *list, int n);

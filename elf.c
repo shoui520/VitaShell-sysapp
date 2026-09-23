@@ -105,9 +105,12 @@ int checkForUnsafeImports(const Elf32_Ehdr *ehdr, const Elf32_Phdr *phdr, void *
   uint32_t segment = ehdr->e_entry >> 30;
   uint32_t offset = ehdr->e_entry & 0x3FFFFFFF;
 
+  if (segment >= ehdr->e_phnum || offset > phdr[segment].p_filesz ||
+      sizeof(SceModuleInfo) > phdr[segment].p_filesz - offset)
+    return VITASHELL_ERROR_INVALID_ARGUMENT;
   uint32_t text_addr = (uint32_t)buffer;
   for (int i = 0; i < segment; i++) {
-    text_addr += phdr[segment].p_filesz;
+    text_addr += phdr[i].p_filesz;
   }
 
   SceModuleInfo *mod_info = (SceModuleInfo *)(text_addr + offset);
@@ -115,11 +118,24 @@ int checkForUnsafeImports(const Elf32_Ehdr *ehdr, const Elf32_Phdr *phdr, void *
   int has_dangerous_nids = 0;
   int has_unsafe_libraries = 0;
 
+  if (mod_info->impTop > mod_info->impBtm || mod_info->impBtm > phdr[segment].p_filesz)
+    return VITASHELL_ERROR_INVALID_ARGUMENT;
   uint32_t i = mod_info->impTop;
   while (i < mod_info->impBtm) {
+    if (sizeof(SceImportsTable3xx) > mod_info->impBtm - i) return VITASHELL_ERROR_INVALID_ARGUMENT;
+    uint16_t table_size;
+    memcpy(&table_size, (void *)(text_addr + i), sizeof(table_size));
+    if ((table_size != sizeof(SceImportsTable3xx) && table_size != sizeof(SceImportsTable2xx)) ||
+        table_size > mod_info->impBtm - i) return VITASHELL_ERROR_INVALID_ARGUMENT;
     SceImportsTable3xx import;
     convertToImportsTable3xx((void *)text_addr + i, &import);
 
+    uint32_t lib_offset = (uint32_t)import.lib_name - phdr[segment].p_vaddr;
+    uint32_t nid_offset = import.func_nid_table - phdr[segment].p_vaddr;
+    if (lib_offset >= phdr[segment].p_filesz || nid_offset > phdr[segment].p_filesz ||
+        import.num_functions > (phdr[segment].p_filesz - nid_offset) / sizeof(uint32_t) ||
+        !memchr((void *)(text_addr + lib_offset), 0, phdr[segment].p_filesz - lib_offset))
+      return VITASHELL_ERROR_INVALID_ARGUMENT;
     char *libname = (char *)(text_addr + import.lib_name - phdr[segment].p_vaddr);
     uint32_t *func_nid_table = (uint32_t *)(text_addr + import.func_nid_table - phdr[segment].p_vaddr);
 
@@ -161,7 +177,8 @@ char *uncompressBuffer(const Elf32_Ehdr *ehdr, const Elf32_Phdr *phdr, const seg
   // sum all segment size
   uint32_t total_sz = 0;
   for (i = 0; i < ehdr->e_phnum; i++) {
-    total_sz += (phdr + i)->p_filesz;
+    if (phdr[i].p_filesz > BIG_BUFFER_SIZE - total_sz) return NULL;
+    total_sz += phdr[i].p_filesz;
   }
 
   char *out = malloc(total_sz);
@@ -176,6 +193,7 @@ char *uncompressBuffer(const Elf32_Ehdr *ehdr, const Elf32_Phdr *phdr, const seg
     uint32_t size = (phdr + i)->p_filesz;
 
     if ((segment + i)->compression == 1) {
+      if ((segment + i)->length > size) { free(out); return NULL; }
       memcpy(buf, buffer + offset, (segment + i)->length);
       buf += size;
       continue;

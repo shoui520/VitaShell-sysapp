@@ -140,13 +140,13 @@ vita2d_texture *getAlternativeCoverImage(const char *file) {
     snprintf(path, MAX_PATH_LENGTH, "%s/cover.jpg", file);
     if (checkFileExist(path)) {
       *p = '/';
-      return vita2d_load_JPEG_file(path);
+      return sysappLoadImageFile(path);
     }
 
     snprintf(path, MAX_PATH_LENGTH, "%s/folder.jpg", file);
     if (checkFileExist(path)) {
       *p = '/';
-      return vita2d_load_JPEG_file(path);
+      return sysappLoadImageFile(path);
     }
 
     *p = '/';
@@ -170,24 +170,28 @@ void getAudioInfo(const char *file) {
     case JPEG_IMAGE:
     case PNG_IMAGE:
     {
+      if (fileinfo->encapsulatedPictureLength <= 0 || fileinfo->encapsulatedPictureLength > BIG_BUFFER_SIZE) break;
       SceUID fd = sceIoOpen(file, SCE_O_RDONLY, 0);
       if (fd >= 0) {
         char *buffer = malloc(fileinfo->encapsulatedPictureLength);
         if (buffer) {
           sceIoLseek32(fd, fileinfo->encapsulatedPictureOffset, SCE_SEEK_SET);
-          sceIoRead(fd, buffer, fileinfo->encapsulatedPictureLength);
+          int read = sceIoRead(fd, buffer, fileinfo->encapsulatedPictureLength);
           sceIoClose(fd);
+          if (read != fileinfo->encapsulatedPictureLength) { free(buffer); break; }
 
           if (fileinfo->encapsulatedPictureType == JPEG_IMAGE)
-            tex = vita2d_load_JPEG_buffer(buffer, fileinfo->encapsulatedPictureLength);
+            tex = sysappLoadImageBuffer(buffer, fileinfo->encapsulatedPictureLength);
 
           if (fileinfo->encapsulatedPictureType == PNG_IMAGE)
-            tex = vita2d_load_PNG_buffer(buffer);
+            tex = sysappLoadImageBuffer(buffer, fileinfo->encapsulatedPictureLength);
 
           if (tex)
             vita2d_texture_set_filters(tex, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
 
           free(buffer);
+        } else {
+          sceIoClose(fd);
         }
 
         break;

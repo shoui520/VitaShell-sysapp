@@ -68,9 +68,10 @@ typedef struct TextEditorState {
   int running;
   char *buffer;
   int size;
+  int capacity;
   int base_pos;
   int rel_pos;
-  int offset_list[MAX_LINES];
+  int offset_list[MAX_LINES + MAX_ENTRIES + 1];
   int selection_list[MAX_SELECTION];
   int n_selections;
   int n_copied_lines;
@@ -228,10 +229,17 @@ static CopyEntry *copy_line(TextEditorState *state, int line_number) {
     state->n_copied_lines = 0;
   }
 
+  if (state->n_copied_lines >= MAX_COPY_BUFFER_SIZE) {
+    errorDialog(VITASHELL_ERROR_NO_MEMORY);
+    return NULL;
+  }
+
   // Get current line
   int line_start = state->offset_list[line_number];
   char line[MAX_LINE_CHARACTERS];
   int length = textReadLine(state->buffer, line_start, state->size, line);
+
+  if (length <= 0 || length > MAX_LINE_CHARACTERS - 2) return NULL;
 
   CopyEntry *entry = &state->copy_buffer[state->n_copied_lines];
 
@@ -260,7 +268,7 @@ static void delete_line(TextEditorState *state, int line_number) {
   int length = textReadLine(state->buffer, line_start, state->size, line);
 
   // Remove line
-  memmove(&state->buffer[line_start], &state->buffer[line_start + length], state->size - line_start);  
+  memmove(&state->buffer[line_start], &state->buffer[line_start + length], state->size - line_start - length);
   state->size -= length;
   state->n_lines -= 1;
 
@@ -293,6 +301,11 @@ static void insert_line(TextEditorState *state, char *line, int pos) {
   // calculated size of inserted line
   int length = strlen(line);
 
+  if (length > state->capacity - state->size || state->n_lines >= MAX_LINES - 1) {
+    errorDialog(VITASHELL_ERROR_NO_MEMORY);
+    return;
+  }
+
   // Make space for inserted line
   memmove(&state->buffer[offset + length], &state->buffer[offset], state->size - offset);
   state->size += length;
@@ -316,8 +329,7 @@ static void insert_line(TextEditorState *state, char *line, int pos) {
 }
 
 static void cut_line(TextEditorState *state, int line_number) {
-  copy_line(state, line_number);
-  delete_line(state, line_number);
+  if (copy_line(state, line_number)) delete_line(state, line_number);
 }
 
 static void paste_lines(TextEditorState *state, int pos) {
@@ -327,6 +339,11 @@ static void paste_lines(TextEditorState *state, int pos) {
   int length = 0, i;
   for (i = 0; i < state->n_copied_lines; i++) {
     length += strlen(state->copy_buffer[i].line);
+  }
+
+  if (length > state->capacity - state->size || state->n_copied_lines > MAX_LINES - state->n_lines - 1) {
+    errorDialog(VITASHELL_ERROR_NO_MEMORY);
+    return;
   }
 
   // Make space for pasted lines
@@ -357,6 +374,11 @@ static int cmp (const void * a, const void * b) {
 
 static int contextMenuEnterCallback(int sel, void *context) {
   TextEditorState *state = (TextEditorState*) context;
+
+  if ((sel == TEXT_MENU_ENTRY_COPY || sel == TEXT_MENU_ENTRY_CUT) && state->n_selections > MAX_COPY_BUFFER_SIZE) {
+    errorDialog(VITASHELL_ERROR_NO_MEMORY);
+    return CONTEXT_MENU_CLOSING;
+  }
 
   switch (sel) {
     case TEXT_MENU_ENTRY_SEARCH:
@@ -510,8 +532,10 @@ int textViewer(const char *file) {
     return VITASHELL_ERROR_NO_MEMORY;
 
   char *buffer_base = memalign(4096, BIG_BUFFER_SIZE);
-  if (!buffer_base)
+  if (!buffer_base) {
+    free(s);
     return VITASHELL_ERROR_NO_MEMORY;
+  }
 
   s->running = 1;
   s->hex_viewer = 0; 
@@ -525,15 +549,17 @@ int textViewer(const char *file) {
   s->edit_line = -1;
 
   if (isInArchive()) {
-    s->size = ReadArchiveFile(file, buffer_base, BIG_BUFFER_SIZE);
+    s->size = ReadArchiveFileBounded(file, buffer_base, BIG_BUFFER_SIZE - 1);
     s->modify_allowed = 0;
   } else {
-    s->size = ReadFile(file, buffer_base, BIG_BUFFER_SIZE);
+    s->size = ReadFileBounded(file, buffer_base, BIG_BUFFER_SIZE - 1);
   }
 
   if (s->size < 0) {
     free(buffer_base);
-    return s->size;
+    int error = s->size;
+    free(s);
+    return error;
   }
 
   s->buffer = buffer_base;
@@ -545,6 +571,8 @@ int textViewer(const char *file) {
     has_utf8_bom = 1;
     s->size -= 3;
   }
+
+  s->capacity = BIG_BUFFER_SIZE - (has_utf8_bom ? 3 : 0);
 
   if (s->size == 0) {
     s->size = 1;
@@ -566,6 +594,12 @@ int textViewer(const char *file) {
   int i;
   for (i = 0; i < MAX_ENTRIES; i++) {
     TextListEntry *entry = malloc(sizeof(TextListEntry));
+    if (!entry) {
+      textListEmpty(&s->list);
+      free(buffer_base);
+      free(s);
+      return VITASHELL_ERROR_NO_MEMORY;
+    }
     entry->line_number = i;
     entry->selected = 0;
 
@@ -578,7 +612,7 @@ int textViewer(const char *file) {
   CountParams count_params;
   count_params.state = s;
 
-  s->count_lines_thid = sceKernelCreateThread("count_lines_thread", (SceKernelThreadEntry)count_lines_thread, 0x10000100, 0x10000, 0, 0x70000, NULL);
+  s->count_lines_thid = sceKernelCreateThread("count_lines_thread", (SceKernelThreadEntry)count_lines_thread, 0x10000100, 0x10000, 0, SCE_KERNEL_CPU_MASK_SYSTEM, NULL);
   if (s->count_lines_thid >= 0)
     sceKernelStartThread(s->count_lines_thid, sizeof(CountParams), &count_params);
 
@@ -856,7 +890,7 @@ int textViewer(const char *file) {
 
             strcpy(s->search_term, search_term);
 
-            s->search_thid = sceKernelCreateThread("search_thread", (SceKernelThreadEntry)search_thread, 0x10000100, 0x10000, 0, 0x70000, NULL);
+            s->search_thid = sceKernelCreateThread("search_thread", (SceKernelThreadEntry)search_thread, 0x10000100, 0x10000, 0, SCE_KERNEL_CPU_MASK_SYSTEM, NULL);
             if (s->search_thid >= 0)
               sceKernelStartThread(s->search_thid, sizeof(SearchParams), &search_params);
           }
@@ -882,6 +916,12 @@ int textViewer(const char *file) {
 
           char *new_line = (char *)getImeDialogInputTextUTF8();
           int new_length = strlen(new_line);
+
+          if (new_length > s->capacity - (s->size - length)) {
+            s->edit_line = -1;
+            errorDialog(VITASHELL_ERROR_NO_MEMORY);
+            continue;
+          }
 
           // Move data if size has changed
           if (new_length != length) {

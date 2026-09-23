@@ -305,7 +305,7 @@ int module_start(SceSize args, void *argp) {
     return SCE_KERNEL_START_SUCCESS;
 
   // Load SceUsbMass
-  SceUID modid = ksceKernelLoadStartModule("ux0:VitaShell/module/umass.skprx", 0, NULL, 0, NULL, NULL);
+  SceUID modid = ksceKernelLoadStartModule("ux0:VitaShellSys/module/umass.skprx", 0, NULL, 0, NULL, NULL);
 
   // Release patch
   taiHookReleaseForKernel(tmp1, ksceSysrootIsSafeModeRef);

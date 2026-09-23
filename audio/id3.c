@@ -37,6 +37,7 @@ int searchJPGstart(int fp, int delta){
     int retValue = -1;
     int i = 0;
 
+    if (delta < 0 || delta > 2 * 1024 * 1024) return -1;
     unsigned char *tBuffer = malloc(sizeof(unsigned char) * (delta + 2));
     if (tBuffer == NULL)
         return -1;
@@ -62,6 +63,7 @@ int searchPNGstart(int fp, int delta){
     int retValue = -1;
     int i = 0;
 
+    if (delta < 0 || delta > 2 * 1024 * 1024) return -1;
     unsigned char *tBuffer = malloc(sizeof(unsigned char) * (delta + 15));
     if (tBuffer == NULL)
         return -1;

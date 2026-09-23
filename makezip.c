@@ -77,6 +77,7 @@ static int zipAddFile(zipFile zf, const char *path, int filename_start, int leve
 
   // Add file to zip
   void *buf = memalign(4096, TRANSFER_SIZE);
+  if (!buf) { sceIoClose(fd); zipCloseFileInZip(zf); return VITASHELL_ERROR_NO_MEMORY; }
 
   uint64_t seek = 0;
 
@@ -182,6 +183,7 @@ static int zipAddFolder(zipFile zf, const char *path, int filename_start, int le
 }
 
 static int zipAddPath(zipFile zf, const char *path, int filename_start, int level, FileProcessParam *param) {
+  if (sceKernelGetThreadStackFreeSize(0) < 16 * 1024) return VITASHELL_ERROR_NO_MEMORY;
   SceUID dfd = sceIoDopen(path);
   if (dfd >= 0) {
     int ret = zipAddFolder(zf, path, filename_start, level, param);
@@ -196,7 +198,9 @@ static int zipAddPath(zipFile zf, const char *path, int filename_start, int leve
 
       res = sceIoDread(dfd, &dir);
       if (res > 0) {
+        if (strlen(path) + strlen(dir.d_name) + 2 > MAX_PATH_LENGTH) { sceIoDclose(dfd); return VITASHELL_ERROR_INVALID_ARGUMENT; }
         char *new_path = malloc(strlen(path) + strlen(dir.d_name) + 2);
+        if (!new_path) { sceIoDclose(dfd); return VITASHELL_ERROR_NO_MEMORY; }
         snprintf(new_path, MAX_PATH_LENGTH, "%s%s%s", path, hasEndSlash(path) ? "" : "/", dir.d_name);
 
         int ret = 0;
@@ -259,6 +263,11 @@ int compress_thread(SceSize args_size, CompressArguments *args) {
   } else {
     count = 1;
     mark_entry_one = fileListCopyEntry(file_entry);
+    if (!mark_entry_one) {
+      closeWaitDialog();
+      errorDialog(VITASHELL_ERROR_NO_MEMORY);
+      goto EXIT;
+    }
     head = mark_entry_one;
   }
 
@@ -322,7 +331,7 @@ int compress_thread(SceSize args_size, CompressArguments *args) {
 
 EXIT:
   if (mark_entry_one)
-    free(mark_entry_one);
+    fileListFreeEntry(mark_entry_one);
 
   if (thid >= 0)
     sceKernelWaitThreadEnd(thid, NULL, NULL);

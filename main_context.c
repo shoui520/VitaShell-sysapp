@@ -944,13 +944,25 @@ static int contextMenuMainEnterCallback(int sel, void *context) {
 
           int i;
           for (i = 0; i < mark_list.length; i++) {
-            fileListAddEntry(&copy_list, fileListCopyEntry(mark_entry), SORT_NONE);
+            FileListEntry *copy = fileListCopyEntry(mark_entry);
+          if (!copy) {
+            fileListEmpty(&copy_list);
+            errorDialog(VITASHELL_ERROR_NO_MEMORY);
+            return CONTEXT_MENU_CLOSING;
+          }
+          fileListAddEntry(&copy_list, copy, SORT_NONE);
 
             // Next
             mark_entry = mark_entry->next;
           }
         } else {
-          fileListAddEntry(&copy_list, fileListCopyEntry(file_entry), SORT_NONE);
+          FileListEntry *copy = fileListCopyEntry(file_entry);
+          if (!copy) {
+            fileListEmpty(&copy_list);
+            errorDialog(VITASHELL_ERROR_NO_MEMORY);
+            return CONTEXT_MENU_CLOSING;
+          }
+          fileListAddEntry(&copy_list, copy, SORT_NONE);
         }
 
         strcpy(copy_list.path, file_list.path);
@@ -1198,7 +1210,13 @@ static int contextMenuMoreEnterCallback(int sel, void *context) {
 
         int type = getFileType(path);
         if (type == FILE_TYPE_VPK) {
-          fileListAddEntry(&install_list, fileListCopyEntry(file_entry), SORT_NONE);
+          FileListEntry *copy = fileListCopyEntry(file_entry);
+          if (!copy) {
+            fileListEmpty(&install_list);
+            errorDialog(VITASHELL_ERROR_NO_MEMORY);
+            return CONTEXT_MENU_CLOSING;
+          }
+          fileListAddEntry(&install_list, copy, SORT_NONE);
         }
 
         // Next

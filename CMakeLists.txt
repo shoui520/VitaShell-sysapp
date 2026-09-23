@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.16)
 
 # VitaSDK defines
 if( NOT DEFINED CMAKE_TOOLCHAIN_FILE )
@@ -12,12 +12,12 @@ endif()
 # Project start
 project(VitaShell)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
-set(VITA_APP_NAME "VitaShell")
-set(VITA_TITLEID  "VITASHELL")
+set(VITA_APP_NAME "VitaShell Sys")
+set(VITA_TITLEID  "VTSYS0001")
 set(VITA_VERSION  "02.02")
 
 # Flags and includes
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -O3 -Wno-unused-variable -Wno-unused-but-set-variable -Wno-format-truncation -fno-lto")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu11 -Wall -O3 -Wno-error=int-conversion -Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-unused-variable -Wno-unused-but-set-variable -Wno-format-truncation -fno-lto")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c+ + 11 -fno-rtti -fno-exceptions")
 set(VITA_MKSFOEX_FLAGS "${VITA_MKSFOEX_FLAGS} -d PARENTAL_LEVEL=1")
 set(VITA_MAKE_FSELF_FLAGS "${VITA_MAKE_FSELF_FLAGS} -a 0x2808000000000000")
@@ -75,6 +75,8 @@ file(GLOB res_files RELATIVE
   resources/*.bin
 )
 
+list(REMOVE_ITEM res_files resources/updater_eboot.bin resources/updater_param.bin)
+
 # ugly hack
 add_resources(vitashell_res
   ${res_files}
@@ -87,6 +89,8 @@ add_resources(vitashell_res
 add_executable(VitaShell
   ${vitashell_res}
   main.c
+  sysapp.c
+  sysapp_image.c
   pfs.c
   main_context.c
   browser.c
@@ -148,10 +152,26 @@ add_executable(VitaShell
 )
 
 add_dependencies(VitaShell vitashell_user_stubs)
-add_dependencies(VitaShell kernel.skprx)
-add_dependencies(VitaShell user.suprx)
-add_dependencies(VitaShell patch.skprx)
-add_dependencies(VitaShell usbdevice.skprx)
+if(TARGET kernel.skprx-self)
+  add_dependencies(VitaShell kernel.skprx-self)
+else()
+  add_dependencies(VitaShell kernel.skprx)
+endif()
+if(TARGET user.suprx-self)
+  add_dependencies(VitaShell user.suprx-self)
+else()
+  add_dependencies(VitaShell user.suprx)
+endif()
+if(TARGET patch.skprx-self)
+  add_dependencies(VitaShell patch.skprx-self)
+else()
+  add_dependencies(VitaShell patch.skprx)
+endif()
+if(TARGET usbdevice.skprx-self)
+  add_dependencies(VitaShell usbdevice.skprx-self)
+else()
+  add_dependencies(VitaShell usbdevice.skprx)
+endif()
 
 target_link_libraries(VitaShell
   ${CMAKE_CURRENT_BINARY_DIR}/modules/user/libVitaShellUser_stub_weak.a
@@ -168,6 +188,7 @@ target_link_libraries(VitaShell
   quirc
   onigmo
   archive
+  zstd
   bz2
   lzma
   crypto
@@ -209,8 +230,13 @@ target_link_libraries(VitaShell
 )
 
 # Create Vita artifacts
-vita_create_self(eboot.bin VitaShell UNSAFE)
-vita_create_vpk(VitaShell.vpk ${VITA_TITLEID} eboot.bin
+set_property(TARGET VitaShell APPEND_STRING PROPERTY LINK_FLAGS
+  " -Wl,--wrap=sceKernelCreateThread,--wrap=sceKernelChangeThreadCpuAffinityMask,--wrap=sceKernelAllocMemBlock,--wrap=sceKernelFreeMemBlock")
+# -pm is subtracted from -m: 74 MiB total = 48 MiB USER_RW + 26 MiB PHYCONT.
+# Scope it to the application SELF, after all plugin modules have been declared.
+set(VITA_MAKE_FSELF_FLAGS "${VITA_MAKE_FSELF_FLAGS} -pm 0x6800")
+vita_create_self(eboot.bin VitaShell UNSAFE ATTRIBUTE 0x0E MEMSIZE 0x12800)
+vita_create_vpk(VitaShellSys.vpk ${VITA_TITLEID} eboot.bin
   VERSION ${VITA_VERSION}
   NAME ${VITA_APP_NAME}
   FILE pkg/sce_sys/icon0.png sce_sys/icon0.png
@@ -219,15 +245,16 @@ vita_create_vpk(VitaShell.vpk ${VITA_TITLEID} eboot.bin
        pkg/sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml
 )
 
-# for network update
+# Separate release output; never overwrite the regular VitaShell release.
 add_custom_target(release
-  COMMAND cp eboot.bin ../release/eboot.bin
-  COMMAND cp VitaShell.vpk_param.sfo ../release/param.sfo
-  COMMAND cp VitaShell.vpk ../release/VitaShell.vpk
-  COMMAND cp ../pkg/sce_sys/livearea/contents/template.xml ../release/template.xml
+  COMMAND ${CMAKE_COMMAND} -E make_directory ../release-sysapp
+  COMMAND cp eboot.bin ../release-sysapp/eboot.bin
+  COMMAND cp VitaShellSys.vpk_param.sfo ../release-sysapp/param.sfo
+  COMMAND cp VitaShellSys.vpk ../release-sysapp/VitaShellSys.vpk
+  COMMAND cp ../pkg/sce_sys/livearea/contents/template.xml ../release-sysapp/template.xml
   DEPENDS eboot.bin
-  DEPENDS VitaShell.vpk
-  DEPENDS VitaShell.vpk_param.sfo
+  DEPENDS VitaShellSys.vpk
+  DEPENDS VitaShellSys.vpk_param.sfo
 )
 
 add_custom_target(send

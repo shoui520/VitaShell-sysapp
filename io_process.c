@@ -75,8 +75,10 @@ SceUID createStartUpdateThread(uint64_t max, int show_kbs) {
   args.show_kbs = show_kbs;
 
   SceUID thid = sceKernelCreateThread("update_thread", (SceKernelThreadEntry)update_thread, 0xBF, 0x4000, 0, 0, NULL);
-  if (thid >= 0)
-    sceKernelStartThread(thid, sizeof(UpdateArguments), &args);
+  if (thid >= 0) {
+    int result = sceKernelStartThread(thid, sizeof(UpdateArguments), &args);
+    if (result < 0) { sceKernelDeleteThread(thid); return result; }
+  }
 
   return thid;
 }
@@ -103,6 +105,11 @@ int delete_thread(SceSize args_size, DeleteArguments *args) {
   } else {
     count = 1;
     mark_entry_one = fileListCopyEntry(file_entry);
+    if (!mark_entry_one) {
+      closeWaitDialog();
+      errorDialog(VITASHELL_ERROR_NO_MEMORY);
+      goto EXIT;
+    }
     head = mark_entry_one;
   }
 
@@ -162,7 +169,7 @@ int delete_thread(SceSize args_size, DeleteArguments *args) {
 
 EXIT:
   if (mark_entry_one)
-    free(mark_entry_one);
+    fileListFreeEntry(mark_entry_one);
 
   if (thid >= 0)
     sceKernelWaitThreadEnd(thid, NULL, NULL);
@@ -493,6 +500,7 @@ static int exportMedia(char *path, uint32_t *songs, uint32_t *videos, uint32_t *
 }
 
 int exportPath(char *path, uint32_t *songs, uint32_t *videos, uint32_t *pictures, FileProcessParam *param) {
+  if (sceKernelGetThreadStackFreeSize(0) < 16 * 1024) return VITASHELL_ERROR_NO_MEMORY;
   SceUID dfd = sceIoDopen(path);
   if (dfd >= 0) {
     int res = 0;
@@ -503,7 +511,9 @@ int exportPath(char *path, uint32_t *songs, uint32_t *videos, uint32_t *pictures
 
       res = sceIoDread(dfd, &dir);
       if (res > 0) {
+        if (strlen(path) + strlen(dir.d_name) + 2 > MAX_PATH_LENGTH) { sceIoDclose(dfd); return VITASHELL_ERROR_INVALID_ARGUMENT; }
         char *new_path = malloc(strlen(path) + strlen(dir.d_name) + 2);
+        if (!new_path) { sceIoDclose(dfd); return VITASHELL_ERROR_NO_MEMORY; }
         snprintf(new_path, MAX_PATH_LENGTH, "%s%s%s", path, hasEndSlash(path) ? "" : "/", dir.d_name);
 
         if (SCE_S_ISDIR(dir.d_stat.st_mode)) {
@@ -566,6 +576,11 @@ int export_thread(SceSize args_size, ExportArguments *args) {
   } else {
     count = 1;
     mark_entry_one = fileListCopyEntry(file_entry);
+    if (!mark_entry_one) {
+      closeWaitDialog();
+      errorDialog(VITASHELL_ERROR_NO_MEMORY);
+      goto EXIT;
+    }
     head = mark_entry_one;
   }
 
@@ -651,7 +666,7 @@ int export_thread(SceSize args_size, ExportArguments *args) {
 
 EXIT:
   if (mark_entry_one)
-    free(mark_entry_one);
+    fileListFreeEntry(mark_entry_one);
 
   if (thid >= 0)
     sceKernelWaitThreadEnd(thid, NULL, NULL);

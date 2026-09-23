@@ -285,6 +285,7 @@ int refreshFileList() {
 
     if (res < 0) {
       ret = res;
+      if (strcasecmp(file_list.path, HOME_PATH) == 0) break;
       dirUp();
     }
   } while (res < 0);

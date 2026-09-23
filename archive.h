@@ -33,6 +33,7 @@ int archiveFileOpen(const char *file, int flags, SceMode mode);
 int archiveFileRead(SceUID fd, void *data, SceSize size);
 int archiveFileClose(SceUID fd);
 
+int ReadArchiveFileBounded(const char *file, void *buf, int size);
 int ReadArchiveFile(const char *file, void *buf, int size);
 
 int archiveClose();

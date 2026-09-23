@@ -58,6 +58,11 @@ static int file_open(struct archive *a, void *client_data) {
     return ARCHIVE_FATAL;
   
   archive_data->buffer = memalign(4096, TRANSFER_SIZE);
+  if (!archive_data->buffer) {
+    sceIoClose(archive_data->fd);
+    archive_data->fd = -1;
+    return ARCHIVE_FATAL;
+  }
   archive_data->block_size = TRANSFER_SIZE;
   
   return ARCHIVE_OK;
@@ -119,9 +124,12 @@ static int file_switch(struct archive *a, void *client_data1, void *client_data2
 }
 
 int append_archive(struct archive *a, const char *filename) {
-  struct archive_data *archive_data = malloc(sizeof(struct archive_data));
+  struct archive_data *archive_data = calloc(1, sizeof(struct archive_data));
+  if (!archive_data) return ARCHIVE_FATAL;
+  archive_data->fd = -1;
   if (archive_data) {
     archive_data->filename = malloc(strlen(filename) + 1);
+    if (!archive_data->filename) { free(archive_data); return ARCHIVE_FATAL; }
     strcpy(archive_data->filename, filename);
     if (archive_read_append_callback_data(a, archive_data) != ARCHIVE_OK) {
       free(archive_data->filename);
@@ -255,6 +263,7 @@ typedef struct ArchiveFileNode {
 } ArchiveFileNode;
 
 static ArchiveFileNode *archive_root = NULL;
+static unsigned int archive_node_count;
 
 char *serializePathName(char *name, char **p) {
   if (!p)
@@ -273,6 +282,7 @@ char *serializePathName(char *name, char **p) {
 }
 
 ArchiveFileNode *createArchiveNode(const char *name, SceIoStat *stat) {
+  if (archive_node_count >= SYSAPP_MAX_LIST_ENTRIES) return NULL;
   ArchiveFileNode *node = malloc(sizeof(ArchiveFileNode));
   if (!node)
     return NULL;
@@ -292,6 +302,7 @@ ArchiveFileNode *createArchiveNode(const char *name, SceIoStat *stat) {
   
   memcpy(&node->stat, stat, sizeof(SceIoStat));
   
+  archive_node_count++;
   return node;
 }
 
@@ -377,6 +388,7 @@ int addArchiveNodeRecursive(ArchiveFileNode *parent, char *name, SceIoStat *stat
   node_stat.st_size = 0;
   
   ArchiveFileNode *node = createArchiveNode(name, p ? &node_stat : stat);  
+  if (!node) return VITASHELL_ERROR_NO_MEMORY;
   if (!parent->child) { // First child
     parent->child = node;
   } else {              // Neighbour
@@ -385,15 +397,20 @@ int addArchiveNodeRecursive(ArchiveFileNode *parent, char *name, SceIoStat *stat
   
   // Recursion
   if (p)
-    addArchiveNodeRecursive(node, p + 1, stat);
+    return addArchiveNodeRecursive(node, p + 1, stat);
   
   return 0;
 }
 
-void addArchiveNode(const char *path, SceIoStat *stat) {  
+int addArchiveNode(const char *path, SceIoStat *stat) {
+  if (!path || strlen(path) >= MAX_PATH_LENGTH) return VITASHELL_ERROR_INVALID_ARGUMENT;
+  unsigned int depth = 0;
+  for (const char *p = path; *p; ++p) {
+    if (*p == '/' && ++depth > 64) return VITASHELL_ERROR_INVALID_ARGUMENT;
+  }
   char name[MAX_PATH_LENGTH];
   strcpy(name, path);
-  addArchiveNodeRecursive(archive_root, name, stat);
+  return addArchiveNodeRecursive(archive_root, name, stat);
 }
 
 void freeArchiveNodes(ArchiveFileNode *curr) {
@@ -409,162 +426,118 @@ void freeArchiveNodes(ArchiveFileNode *curr) {
     ArchiveFileNode *next = curr->next;
     free(curr->name);
     free(curr);
+    archive_node_count--;
     curr = next;
   }
 }
 
-int archiveCheckFilesForUnsafeFself() {  
-  // Open archive file
-  struct archive *archive = open_archive(archive_file);
-  if (!archive)
-    return 0;
-  
-  // Traverse
-  while (1) {
-    struct archive_entry *archive_entry;
-    int res = archive_read_next_header(archive, &archive_entry);
-    if (res == ARCHIVE_EOF)
-      break;
-    
-    if (res != ARCHIVE_OK) {
-      archive_read_free(archive);
-      return 0;
-    }
-    
-    // Get entry information
-    const char *name = archive_entry_pathname(archive_entry);
-    const struct stat *stat = archive_entry_stat(archive_entry);
-        
-    // Read magic
-    uint32_t magic = 0;
-    archive_read_data(archive, &magic, sizeof(uint32_t));
-    
-    // SCE magic
-    if (magic == 0x00454353) {
-      char sce_header[0x84];
-      archive_read_data(archive, sce_header, sizeof(sce_header));
-
-      uint64_t elf1_offset = *(uint64_t *)(sce_header + 0x3C);
-      uint64_t phdr_offset = *(uint64_t *)(sce_header + 0x44);
-      uint64_t section_info_offset = *(uint64_t *)(sce_header + 0x54);
-
-      // jump to ehdr
-      // Until here we have read 0x88 bytes
-      int i;
-      for (i = 0; i < elf1_offset - 0x88; i += sizeof(uint32_t)) {
-        uint32_t dummy = 0;
-        archive_read_data(archive, &dummy, sizeof(uint32_t));
-      }
-
-      // Check imports
-      char *buffer = malloc(stat->st_size);
-      if (buffer) {
-        archive_read_data(archive, buffer, stat->st_size);
-
-        Elf32_Ehdr *ehdr = (Elf32_Ehdr*)buffer;
-        Elf32_Phdr *phdr = (Elf32_Phdr*)(buffer + phdr_offset - elf1_offset);
-        segment_info *info = (segment_info*)(buffer + section_info_offset - elf1_offset);
-
-        // segment is a pointer to the first segment
-        char *segment = buffer + info->offset - elf1_offset;
-
-        // zlib compress magic
-        char *uncompressed_buffer = NULL;
-        if (segment[0] == 0x78) {
-          // uncompressedBuffer will return uncompressed segments
-          uncompressed_buffer = uncompressBuffer(ehdr, phdr, info, segment);
-          if (uncompressed_buffer) {
-            segment = uncompressed_buffer;
-          }
-        }
-
-        int unsafe = checkForUnsafeImports(ehdr, phdr, segment);
-
-        if (uncompressed_buffer)
-          free(uncompressed_buffer);
-        free(buffer);
-
-        if (unsafe) {
-          archive_read_free(archive);
-          return unsafe;
-        }
-      }
-
-      // Check authid flag
-      uint64_t authid = *(uint64_t *)(sce_header + 0x7C);
-      if (authid != 0x2F00000000000002) {
-        archive_read_free(archive);
-        return 1; // Unsafe
-      }
-    }
+/* Check a bounded SELF image. Compressed segments have their own bound. */
+static int checkSelfImage(const unsigned char *buffer, size_t size) {
+  if (size < 0x88) return VITASHELL_ERROR_INVALID_ARGUMENT;
+  uint64_t elf_offset, phdr_offset, info_offset, authid;
+  memcpy(&elf_offset, buffer + 0x40, 8);
+  memcpy(&phdr_offset, buffer + 0x48, 8);
+  memcpy(&info_offset, buffer + 0x58, 8);
+  memcpy(&authid, buffer + 0x80, 8);
+  if (elf_offset > size || sizeof(Elf32_Ehdr) > size - elf_offset)
+    return VITASHELL_ERROR_INVALID_ARGUMENT;
+  Elf32_Ehdr ehdr;
+  memcpy(&ehdr, buffer + elf_offset, sizeof(ehdr));
+  if (!ehdr.e_phnum || phdr_offset > size || info_offset > size ||
+      ehdr.e_phnum > (size - phdr_offset) / sizeof(Elf32_Phdr) ||
+      ehdr.e_phnum > (size - info_offset) / sizeof(segment_info))
+    return VITASHELL_ERROR_INVALID_ARGUMENT;
+  /* SELF tables are naturally aligned on Vita. Reject malformed offsets. */
+  if ((phdr_offset & 3) || (info_offset & 7)) return VITASHELL_ERROR_INVALID_ARGUMENT;
+  const Elf32_Phdr *phdr = (const Elf32_Phdr *)(buffer + phdr_offset);
+  const segment_info *info = (const segment_info *)(buffer + info_offset);
+  size_t total = 0;
+  for (unsigned int i = 0; i < ehdr.e_phnum; ++i) {
+    if (phdr[i].p_filesz > BIG_BUFFER_SIZE - total) return VITASHELL_ERROR_NO_MEMORY;
+    if (info[i].offset > size || info[i].length > size - info[i].offset)
+      return VITASHELL_ERROR_INVALID_ARGUMENT;
+    total += phdr[i].p_filesz;
   }
+  char *segments = malloc(total ? total : 1);
+  if (!segments) return VITASHELL_ERROR_NO_MEMORY;
+  size_t offset = 0;
+  for (unsigned int i = 0; i < ehdr.e_phnum; ++i) {
+    if (!phdr[i].p_filesz) continue;
+    if (info[i].compression == 1) {
+      if (info[i].length != phdr[i].p_filesz) { free(segments); return VITASHELL_ERROR_INVALID_ARGUMENT; }
+      memcpy(segments + offset, buffer + info[i].offset, phdr[i].p_filesz);
+    } else {
+      uLongf out = phdr[i].p_filesz;
+      if (uncompress((Bytef *)segments + offset, &out, buffer + info[i].offset, info[i].length) != Z_OK || out != phdr[i].p_filesz) {
+        free(segments); return VITASHELL_ERROR_INVALID_ARGUMENT;
+      }
+    }
+    offset += phdr[i].p_filesz;
+  }
+  int unsafe = checkForUnsafeImports(&ehdr, phdr, segments);
+  free(segments);
+  return unsafe == 0 && authid != 0x2F00000000000002 ? 1 : unsafe;
+}
 
+int archiveCheckFilesForUnsafeFself() {
+  struct archive *archive = open_archive(archive_file);
+  if (!archive) return VITASHELL_ERROR_NO_MEMORY;
+  int result = 0;
+  for (;;) {
+    struct archive_entry *entry;
+    int status = archive_read_next_header(archive, &entry);
+    if (status == ARCHIVE_EOF) break;
+    if (status != ARCHIVE_OK) { result = VITASHELL_ERROR_INTERNAL; break; }
+    uint32_t magic = 0;
+    if (archive_read_data(archive, &magic, sizeof(magic)) != sizeof(magic) || magic != 0x00454353)
+      continue;
+    int64_t length = archive_entry_size(entry);
+    if (length < 0x88 || length > BIG_BUFFER_SIZE) { result = VITASHELL_ERROR_NO_MEMORY; break; }
+    unsigned char *buffer = malloc(length);
+    if (!buffer) { result = VITASHELL_ERROR_NO_MEMORY; break; }
+    memcpy(buffer, &magic, sizeof(magic));
+    size_t offset = sizeof(magic);
+    while (offset < length) {
+      int n = archive_read_data(archive, buffer + offset, length - offset);
+      if (n <= 0) break;
+      offset += n;
+    }
+    result = offset == length ? checkSelfImage(buffer, length) : VITASHELL_ERROR_INTERNAL;
+    free(buffer);
+    if (result) break;
+  }
   archive_read_free(archive);
-  return 0;
+  return result;
 }
 
 int fileListGetArchiveEntries(FileList *list, const char *path, int sort) {
-  if (is_psarc)
-    return fileListGetPsarcEntries(list, path, sort);
-  
-  int res;
-
-  if (!list)
-    return VITASHELL_ERROR_ILLEGAL_ADDR;
-
-  FileListEntry *entry = malloc(sizeof(FileListEntry));
-  if (entry) {
-    entry->name_length = strlen(DIR_UP);
-    entry->name = malloc(entry->name_length + 1);
-    strcpy(entry->name, DIR_UP);
-    entry->is_folder = 1;
-    entry->is_symlink = 0;
-    entry->type = FILE_TYPE_UNKNOWN;
+  if (is_psarc) return fileListGetPsarcEntries(list, path, sort);
+  if (!list) return VITASHELL_ERROR_ILLEGAL_ADDR;
+  FileListEntry *entry = fileListCreateEntry(DIR_UP, 1);
+  if (!entry) return VITASHELL_ERROR_NO_MEMORY;
+  fileListAddEntry(list, entry, sort);
+  ArchiveFileNode *curr = findArchiveNode(path + archive_path_start);
+  if (curr) curr = curr->child;
+  for (; curr; curr = curr->next) {
+    if (list->length >= SYSAPP_MAX_LIST_ENTRIES) goto no_memory;
+    entry = fileListCreateEntry(curr->name, SCE_S_ISDIR(curr->stat.st_mode));
+    if (!entry) goto no_memory;
+    entry->size = curr->stat.st_size;
+    entry->ctime = curr->stat.st_ctime;
+    entry->mtime = curr->stat.st_mtime;
+    entry->atime = curr->stat.st_atime;
+    if (entry->is_folder) list->folders++; else list->files++;
     fileListAddEntry(list, entry, sort);
   }
-  
-  // Traverse
-  ArchiveFileNode *curr = findArchiveNode(path + archive_path_start);
-  if (curr)
-    curr = curr->child;
-  while (curr) {
-    FileListEntry *entry = malloc(sizeof(FileListEntry));
-    if (entry) {
-      entry->is_symlink = 0;
-      entry->is_folder = SCE_S_ISDIR(curr->stat.st_mode);
-      if (entry->is_folder) {
-        entry->name_length = strlen(curr->name) + 1;
-        entry->name = malloc(entry->name_length + 1);
-        strcpy(entry->name, curr->name);
-        addEndSlash(entry->name);
-        entry->type = FILE_TYPE_UNKNOWN;
-        list->folders++;
-      } else {
-        entry->name_length = strlen(curr->name);
-        entry->name = malloc(entry->name_length + 1);
-        strcpy(entry->name, curr->name);
-        entry->type = getFileType(entry->name);
-        list->files++;
-      }
-
-      entry->size = curr->stat.st_size;
-      
-      memcpy(&entry->ctime, (SceDateTime *)&curr->stat.st_ctime, sizeof(SceDateTime));
-      memcpy(&entry->mtime, (SceDateTime *)&curr->stat.st_mtime, sizeof(SceDateTime));
-      memcpy(&entry->atime, (SceDateTime *)&curr->stat.st_atime, sizeof(SceDateTime));
-      
-      fileListAddEntry(list, entry, sort);
-    }
-    
-    // Get next entry in this directory
-    curr = curr->next;
-  }
-
   return 0;
+no_memory:
+  fileListEmpty(list);
+  return VITASHELL_ERROR_NO_MEMORY;
 }
 
 int getArchivePathInfo(const char *path, uint64_t *size, uint32_t *folders,
                        uint32_t *files, int (* handler)(const char *path)) {
+  if (sceKernelGetThreadStackFreeSize(0) < 16 * 1024) return VITASHELL_ERROR_NO_MEMORY;
   if (is_psarc)
     return getPsarcPathInfo(path, size, folders, files, handler);
   
@@ -578,13 +551,16 @@ int getArchivePathInfo(const char *path, uint64_t *size, uint32_t *folders,
   if (SCE_S_ISDIR(stat.st_mode)) {
     FileList list;
     memset(&list, 0, sizeof(FileList));
-    fileListGetArchiveEntries(&list, path, SORT_NONE);
+    res = fileListGetArchiveEntries(&list, path, SORT_NONE);
+    if (res < 0) return res;
 
     FileListEntry *entry = list.head->next; // Ignore ..
 
     int i;
     for (i = 0; i < list.length - 1; i++, entry = entry->next) {
+      if (strlen(path) + strlen(entry->name) + 2 > MAX_PATH_LENGTH) { fileListEmpty(&list); return VITASHELL_ERROR_INVALID_ARGUMENT; }
       char *new_path = malloc(strlen(path) + strlen(entry->name) + 2);
+      if (!new_path) { fileListEmpty(&list); return VITASHELL_ERROR_NO_MEMORY; }
       snprintf(new_path, MAX_PATH_LENGTH, "%s%s", path, entry->name);
       
       if (handler && handler(new_path)) {
@@ -633,13 +609,16 @@ int extractArchiveFile(const char *src_path, const char *dst_path, FileProcessPa
   if (fdsrc < 0)
     return fdsrc;
 
+  void *buf = memalign(4096, TRANSFER_SIZE);
+  if (!buf) { archiveFileClose(fdsrc); return VITASHELL_ERROR_NO_MEMORY; }
+
   SceUID fddst = sceIoOpen(dst_path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
   if (fddst < 0) {
-    psarcFileClose(fdsrc);
+    free(buf);
+    archiveFileClose(fdsrc);
     return fddst;
   }
 
-  void *buf = memalign(4096, TRANSFER_SIZE);
 
   while (1) {
     int read = archiveFileRead(fdsrc, buf, TRANSFER_SIZE);
@@ -700,6 +679,7 @@ int extractArchiveFile(const char *src_path, const char *dst_path, FileProcessPa
 }
 
 int extractArchivePath(const char *src_path, const char *dst_path, FileProcessParam *param) {
+  if (sceKernelGetThreadStackFreeSize(0) < 16 * 1024) return VITASHELL_ERROR_NO_MEMORY;
   if (is_psarc)
     return extractPsarcPath(src_path, dst_path, param);
   
@@ -713,7 +693,8 @@ int extractArchivePath(const char *src_path, const char *dst_path, FileProcessPa
   if (SCE_S_ISDIR(stat.st_mode)) {
     FileList list;
     memset(&list, 0, sizeof(FileList));
-    fileListGetArchiveEntries(&list, src_path, SORT_NONE);
+    res = fileListGetArchiveEntries(&list, src_path, SORT_NONE);
+    if (res < 0) return res;
 
     int ret = sceIoMkdir(dst_path, 0777);
     if (ret < 0 && ret != SCE_ERROR_ERRNO_EEXIST) {
@@ -738,10 +719,16 @@ int extractArchivePath(const char *src_path, const char *dst_path, FileProcessPa
 
     int i;
     for (i = 0; i < list.length - 1; i++, entry = entry->next) {
+      if (strlen(src_path) + strlen(entry->name) + 2 > MAX_PATH_LENGTH) { fileListEmpty(&list); return VITASHELL_ERROR_INVALID_ARGUMENT; }
       char *new_src_path = malloc(strlen(src_path) + strlen(entry->name) + 2);
+      if (!new_src_path) { fileListEmpty(&list); return VITASHELL_ERROR_NO_MEMORY; }
       snprintf(new_src_path, MAX_PATH_LENGTH, "%s%s", src_path, entry->name);
 
+      if (strlen(dst_path) + strlen(entry->name) + 2 > MAX_PATH_LENGTH) { free(new_src_path); fileListEmpty(&list); return VITASHELL_ERROR_INVALID_ARGUMENT; }
+
       char *new_dst_path = malloc(strlen(dst_path) + strlen(entry->name) + 2);
+
+      if (!new_dst_path) { free(new_src_path); fileListEmpty(&list); return VITASHELL_ERROR_NO_MEMORY; }
       snprintf(new_dst_path, MAX_PATH_LENGTH, "%s%s", dst_path, entry->name);
 
       int ret = 0;
@@ -846,12 +833,28 @@ int archiveFileClose(SceUID fd) {
 
 int ReadArchiveFile(const char *file, void *buf, int size) {
   SceUID fd = archiveFileOpen(file, SCE_O_RDONLY, 0);
-  if (fd < 0)
-    return fd;
-
-  int read = archiveFileRead(fd, buf, size);
+  if (fd < 0) return fd;
+  int result = archiveFileRead(fd, buf, size);
   archiveFileClose(fd);
-  return read;
+  return result;
+}
+
+int ReadArchiveFileBounded(const char *file, void *buf, int size) {
+  SceUID fd = archiveFileOpen(file, SCE_O_RDONLY, 0);
+  if (fd < 0) return fd;
+  int total = 0, result = 0;
+  while (total < size) {
+    result = archiveFileRead(fd, (char *)buf + total, size - total);
+    if (result <= 0) break;
+    total += result;
+  }
+  if (result >= 0 && total == size) {
+    char extra;
+    result = archiveFileRead(fd, &extra, 1);
+    if (result > 0) result = VITASHELL_ERROR_NO_MEMORY;
+  }
+  archiveFileClose(fd);
+  return result < 0 ? result : total;
 }
 
 int archiveNeedPassword() {
@@ -872,6 +875,7 @@ int archiveClose() {
     return psarcClose();
   
   freeArchiveNodes(archive_root);
+  archive_root = NULL;
   return 0;
 }
 
@@ -917,6 +921,7 @@ int archiveOpen(const char *file) {
   memset(&root_stat, 0, sizeof(SceIoStat));
   root_stat.st_mode = SCE_S_IFDIR;
   archive_root = createArchiveNode("/", &root_stat);
+  if (!archive_root) { archive_read_free(archive); return VITASHELL_ERROR_NO_MEMORY; }
   
   // Traverse
   while (1) {
@@ -927,6 +932,7 @@ int archiveOpen(const char *file) {
     
     if (res != ARCHIVE_OK) {
       archive_read_free(archive);
+      archiveClose();
       return -1;
     }
     
@@ -956,7 +962,12 @@ int archiveOpen(const char *file) {
     convertLocalTimeToUtc(&stat.st_atime, &time);  
     
     // Add node
-    addArchiveNode(name, &stat);
+    res = addArchiveNode(name, &stat);
+    if (res < 0) {
+      archive_read_free(archive);
+      archiveClose();
+      return res;
+    }
   }
 
   archive_read_free(archive);

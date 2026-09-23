@@ -46,6 +46,8 @@
 
 #include <vitashell_user.h>
 
+#include "sysapp.h"
+#include "sysapp_image.h"
 #include "file.h"
 #include "vitashell_config.h"
 #include "vitashell_error.h"
@@ -58,14 +60,14 @@
 
 #define VITASHELL_VERSION ((VITASHELL_VERSION_MAJOR << 0x18) | (VITASHELL_VERSION_MINOR << 0x10))
 
-#define VITASHELL_LASTDIR "ux0:VitaShell/internal/lastdir.txt"
+#define VITASHELL_LASTDIR "ux0:VitaShellSys/internal/lastdir.txt"
 
 // needs / at the end
-#define VITASHELL_BOOKMARKS_PATH "ux0:VitaShell/bookmarks/"
-#define VITASHELL_RECENT_PATH "ux0:VitaShell/recent/"
+#define VITASHELL_BOOKMARKS_PATH "ux0:VitaShellSys/bookmarks/"
+#define VITASHELL_RECENT_PATH "ux0:VitaShellSys/recent/"
 #define VITASHELL_RECENT_PATH_DELETE_INTERVAL_DAYS 14
 
-#define VITASHELL_TITLEID "VITASHELL"
+#define VITASHELL_TITLEID "VTSYS0001"
 
 #define ALIGN(x, align) (((x) + ((align) - 1)) & ~((align) - 1))
 
@@ -152,7 +154,7 @@
 #define MAX_ENTRIES 17
 #define MAX_URL_LENGTH 128
 
-#define BIG_BUFFER_SIZE 16 * 1024 * 1024
+#define BIG_BUFFER_SIZE (2 * 1024 * 1024)
 
 enum RefreshModes {
   REFRESH_MODE_NONE,

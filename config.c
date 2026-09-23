@@ -96,6 +96,7 @@ static char *getString(const char *str) {
   int len = p - (str + 1);
 
   char *out = malloc(len + 1);
+  if (!out) return NULL;
   strncpy(out, str + 1, len);
   out[len] = '\0';
 

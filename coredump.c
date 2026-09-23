@@ -162,7 +162,9 @@ int coredumpViewer(const char *file) {
   if (!buffer)
     return VITASHELL_ERROR_NO_MEMORY;
 
-  int size = ReadFile(file, buffer, BIG_BUFFER_SIZE);
+  int size = ReadFileBounded(file, buffer, BIG_BUFFER_SIZE);
+
+  if (size < 2) { free(buffer); return size < 0 ? size : VITASHELL_ERROR_INVALID_MAGIC; }
 
   if (*(uint16_t *)buffer == 0x8B1F) {
     void *out_buf = memalign(4096, BIG_BUFFER_SIZE);
@@ -179,11 +181,16 @@ int coredumpViewer(const char *file) {
     }
 
     memcpy(buffer, out_buf, out_size);
+    size = out_size;
 
     free(out_buf);
   }
 
+  if (size < sizeof(Elf32_Ehdr)) { free(buffer); return VITASHELL_ERROR_INVALID_MAGIC; }
   Elf32_Ehdr *ehdr = (Elf32_Ehdr *)buffer;
+  if (ehdr->e_phoff > size || ehdr->e_phnum > (size - ehdr->e_phoff) / sizeof(Elf32_Phdr)) {
+    free(buffer); return VITASHELL_ERROR_INVALID_ARGUMENT;
+  }
   Elf32_Phdr *phdr = (Elf32_Phdr *)((uint32_t)buffer + ehdr->e_phoff);
 
   if (ehdr->e_ident[EI_MAG0] != ELFMAG0 ||
@@ -194,16 +201,20 @@ int coredumpViewer(const char *file) {
     return VITASHELL_ERROR_INVALID_MAGIC;
   }
 
-  char thname[32], modname[32];
+  char thname[32] = {0}, modname[32] = {0};
   SceUID thid = -1, modid = -1;
   uint32_t epc = -1, rel_epc = -1;
   int cause = -1;
   uint32_t bad_v_addr = -1;
-  uint32_t regs[16];
+  uint32_t regs[16] = {0};
 
   int i;
   for (i = 0; i < ehdr->e_phnum; i++) {
     if (phdr[i].p_type == 0x4) {
+      if (phdr[i].p_offset > size || phdr[i].p_filesz > size - phdr[i].p_offset ||
+          phdr[i].p_filesz < sizeof(InfoHeader)) {
+        free(buffer); return VITASHELL_ERROR_INVALID_ARGUMENT;
+      }
       void *program = malloc(phdr[i].p_filesz);
       if (!program) {
         free(buffer);
@@ -213,13 +224,15 @@ int coredumpViewer(const char *file) {
       memcpy(program, buffer + phdr[i].p_offset, phdr[i].p_filesz);
 
       InfoHeader *info = (InfoHeader *)program;
+      info->name[sizeof(info->name) - 1] = 0;
+      size_t payload = phdr[i].p_filesz - sizeof(InfoHeader);
       
       if (strcmp(info->name, "THREAD_INFO") == 0) {
         int j;
-        for (j = 0; j < ((InfoHeader *)program)->num; j++) {
+        for (j = 0; j < info->num && j < payload / sizeof(ThreadInfo); j++) {
           ThreadInfo *thread_info = (ThreadInfo *)(program + sizeof(InfoHeader));
           if (thread_info[j].cause != 0) {
-            strcpy(thname, thread_info[j].name);
+            memcpy(thname, thread_info[j].name, sizeof(thname) - 1);
             thid = thread_info[j].uid;
             epc = thread_info[j].pc;
             cause = thread_info[j].cause;
@@ -228,7 +241,7 @@ int coredumpViewer(const char *file) {
         }
       } else if (strcmp(info->name, "THREAD_REG_INFO") == 0) {
         int j;
-        for (j = 0; j < ((InfoHeader *)program)->num; j++) {
+        for (j = 0; j < info->num && j < payload / sizeof(ThreadRegInfo); j++) {
           ThreadRegInfo *thread_reg_info = (ThreadRegInfo *)(program + sizeof(InfoHeader));
 
           if (thread_reg_info[j].uid == thid) {
@@ -242,10 +255,12 @@ int coredumpViewer(const char *file) {
 
         int j;
         for (j = 0; j < ((InfoHeader *)program)->num; j++) {
+          if (offset > payload || sizeof(ModuleInfoOneSegment) > payload - offset) break;
           ModuleInfoTwoSegment *mod_info = (ModuleInfoTwoSegment *)(program + sizeof(InfoHeader) + offset);
           
+          if (mod_info->num_segments == 2 && sizeof(ModuleInfoTwoSegment) > payload - offset) break;
           if (epc >= mod_info->segments[0].addr && epc < (mod_info->segments[0].addr+mod_info->segments[0].size)) {
-            strcpy(modname, mod_info->name);
+            memcpy(modname, mod_info->name, sizeof(mod_info->name));
             modid = mod_info->uid;
             rel_epc = epc - mod_info->segments[0].addr;
             break;

@@ -7,6 +7,7 @@
 const char * boyer_moore(const char *haystack, const char *needle) {
   size_t plen = strlen(needle), slen = strlen(haystack);
 
+  if (plen == 0) return haystack;
   if (plen > slen) {
     return NULL;
   }
@@ -26,6 +27,7 @@ const char * boyer_moore(const char *haystack, const char *needle) {
 
   /* calc next table („good rule“) */
   next = (int*)malloc((plen + 1) * sizeof(int));
+  if (!next) return NULL;
 
   for (j = 0; j <= plen; j++) {
     for (i = plen - 1; i >= 1; i--) {

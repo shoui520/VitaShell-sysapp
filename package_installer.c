@@ -126,7 +126,6 @@ int promoteApp(const char *path) {
 int deleteApp(const char *titleid) {
   int res;
 
-  sceAppMgrDestroyOtherApp();
 
   res = loadScePaf();
   if (res < 0)
@@ -256,6 +255,7 @@ int makeHeadBin() {
 
   // Allocate head.bin buffer
   uint8_t *head_bin = malloc((int)&_binary_resources_head_bin_size);
+  if (!head_bin) return VITASHELL_ERROR_NO_MEMORY;
   memcpy(head_bin, (void *)&_binary_resources_head_bin_start, (int)&_binary_resources_head_bin_size);
 
   // Write full title id
@@ -437,6 +437,11 @@ int install_thread(SceSize args_size, InstallArguments *args) {
 
     // Team molecule's request: Full permission access warning
     int unsafe = archiveCheckFilesForUnsafeFself(); // 0: Safe, 1: Unsafe, 2: Dangerous
+    if (unsafe < 0) {
+      closeWaitDialog();
+      errorDialog(unsafe);
+      goto EXIT;
+    }
     if (!vitashell_config.disable_warning && unsafe) {
       closeWaitDialog();
 

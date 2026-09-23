@@ -103,6 +103,7 @@ int sendFile(const char *src_path, FileProcessParam *param) {
   }
   
   void *buf = memalign(4096, SHARE_SIZE);
+  if (!buf) { sceIoClose(fdsrc); return VITASHELL_ERROR_NO_MEMORY; }
   
   while (1) {
     int read = sceIoRead(fdsrc, buf, SHARE_SIZE);
@@ -144,7 +145,8 @@ int sendFile(const char *src_path, FileProcessParam *param) {
   return 1;
 }
 
-int sendPath(const char *src_path, FileProcessParam *param) {  
+int sendPath(const char *src_path, FileProcessParam *param) {
+  if (sceKernelGetThreadStackFreeSize(0) < 16 * 1024) return VITASHELL_ERROR_NO_MEMORY;
   SceUID dfd = sceIoDopen(src_path);
   if (dfd >= 0) {
     // Send info
@@ -187,7 +189,9 @@ int sendPath(const char *src_path, FileProcessParam *param) {
 
       res = sceIoDread(dfd, &dir);
       if (res > 0) {
+        if (strlen(src_path) + strlen(dir.d_name) + 2 > MAX_PATH_LENGTH) { sceIoDclose(dfd); return VITASHELL_ERROR_INVALID_ARGUMENT; }
         char *new_src_path = malloc(strlen(src_path) + strlen(dir.d_name) + 2);
+        if (!new_src_path) { sceIoDclose(dfd); return VITASHELL_ERROR_NO_MEMORY; }
         snprintf(new_src_path, MAX_PATH_LENGTH, "%s%s%s", src_path, hasEndSlash(src_path) ? "" : "/", dir.d_name);
 
         int ret = 0;
@@ -238,6 +242,11 @@ int send_thread(SceSize args_size, SendArguments *args) {
   } else {
     count = 1;
     mark_entry_one = fileListCopyEntry(file_entry);
+    if (!mark_entry_one) {
+      closeWaitDialog();
+      errorDialog(VITASHELL_ERROR_NO_MEMORY);
+      goto EXIT;
+    }
     head = mark_entry_one;
   }
 
@@ -330,7 +339,7 @@ CANCELED:
 
 EXIT:
   if (mark_entry_one)
-    free(mark_entry_one);
+    fileListFreeEntry(mark_entry_one);
 
   if (thid >= 0)
     sceKernelWaitThreadEnd(thid, NULL, NULL);
@@ -463,13 +472,15 @@ int receive_thread(SceSize args_size, ReceiveArguments *args) {
     
     // Receive file
     if (info.type == SHARE_TYPE_FILE) {
+      void *buf = memalign(4096, SHARE_SIZE);
+      if (!buf) { res = VITASHELL_ERROR_NO_MEMORY; goto CANCELED; }
       SceUID fddst = sceIoOpen(dst_path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
       if (fddst < 0) {
+        free(buf);
         res = fddst;
         goto CANCELED;
       }
 
-      void *buf = memalign(4096, SHARE_SIZE);
 
       uint64_t recv_offset = 0;
       while (recv_offset < info.file_size) {
@@ -778,6 +789,7 @@ void drawAdhocDialog() {
   if (adhoc_dialog.status == ADHOC_DIALOG_CLOSED)
     return;
 
+  if (dialog_image) {
   // Dialog background
   float dialog_width = vita2d_texture_get_width(dialog_image);
   float dialog_height = vita2d_texture_get_height(dialog_image);
@@ -786,6 +798,11 @@ void drawAdhocDialog() {
                                            adhoc_dialog.scale * (adhoc_dialog.width/dialog_width),
                                            adhoc_dialog.scale * (adhoc_dialog.height/dialog_height),
                                            0.0f, dialog_width / 2.0f, dialog_height / 2.0f);
+  } else {
+    vita2d_draw_rectangle(adhoc_dialog.x + adhoc_dialog.width * (1.0f - adhoc_dialog.scale) / 2.0f,
+      adhoc_dialog.y + adhoc_dialog.height * (1.0f - adhoc_dialog.scale) / 2.0f,
+      adhoc_dialog.width * adhoc_dialog.scale, adhoc_dialog.height * adhoc_dialog.scale, DIALOG_BG_COLOR);
+  }
 
   if (adhoc_dialog.status == ADHOC_DIALOG_OPENED) {
     float string_y = adhoc_dialog.y + SHELL_MARGIN_Y - 2.0f;

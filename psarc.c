@@ -158,6 +158,12 @@ int psarcOpen(const char *file) {
   params.dhStorage.pPtr = g_DHStorage;
   params.dhStorage.length = sizeof(g_DHStorage);  
   params.pathMax = MAX_PATH_LENGTH;
+  params.ioThreadCount = 1;
+  params.maxDecompressorThreadCount = 1;
+  for (int i = 0; i < 3; ++i) {
+    params.threadAffinity[i] = SCE_KERNEL_CPU_MASK_SYSTEM;
+    params.threadPriority[i] = 0x10000100;
+  }
   
   res = sceFiosInitialize(&params);
   if (res < 0)
@@ -176,8 +182,16 @@ int psarcOpen(const char *file) {
     goto ERROR_ARCHIVE_GET_MOUNT_BUFFER_SIZE;
   }
 
+  if (result > BIG_BUFFER_SIZE) {
+    res = VITASHELL_ERROR_NO_MEMORY;
+    goto ERROR_ARCHIVE_GET_MOUNT_BUFFER_SIZE;
+  }
   g_MountBuffer.length = (size_t)result;
   g_MountBuffer.pPtr = malloc(g_MountBuffer.length);
+  if (!g_MountBuffer.pPtr) {
+    res = VITASHELL_ERROR_NO_MEMORY;
+    goto ERROR_ARCHIVE_GET_MOUNT_BUFFER_SIZE;
+  }
 
   res = sceFiosArchiveMountSync(NULL, &g_ArchiveFH, file, file, g_MountBuffer, NULL);
   if (res < 0)
@@ -219,16 +233,9 @@ int fileListGetPsarcEntries(FileList *list, const char *path, int sort) {
   if (res < 0)
     return res;
 
-  FileListEntry *entry = malloc(sizeof(FileListEntry));
-  if (entry) {
-    entry->name_length = strlen(DIR_UP);
-    entry->name = malloc(entry->name_length + 1);
-    strcpy(entry->name, DIR_UP);
-    entry->is_folder = 1;
-    entry->is_symlink = 0;
-    entry->type = FILE_TYPE_UNKNOWN;
-    fileListAddEntry(list, entry, sort);
-  }
+  FileListEntry *entry = fileListCreateEntry(DIR_UP, 1);
+  if (!entry) { sceFiosDHCloseSync(NULL, dh); return VITASHELL_ERROR_NO_MEMORY; }
+  fileListAddEntry(list, entry, sort);
 
   do {
     SceFiosDirEntry dir;
@@ -243,25 +250,19 @@ int fileListGetPsarcEntries(FileList *list, const char *path, int sort) {
       memset(&stat, 0, sizeof(SceFiosStat));
       
       if (sceFiosStatSync(NULL, dir.fullPath, &stat) >= 0) {
-        FileListEntry *entry = malloc(sizeof(FileListEntry));
-        if (entry) {
-          entry->is_symlink = 0;
-          entry->is_folder = stat.statFlags & 0x1;
-          if (entry->is_folder) {
-            entry->name_length = strlen(name) + 1;
-            entry->name = malloc(entry->name_length + 1);
-            strcpy(entry->name, name);
-            addEndSlash(entry->name);
-            entry->type = FILE_TYPE_UNKNOWN;
-            list->folders++;
-          } else {
-            entry->name_length = strlen(name);
-            entry->name = malloc(entry->name_length + 1);
-            strcpy(entry->name, name);
-            entry->type = getFileType(entry->name);
-            list->files++;
-          }
-
+        if (list->length >= SYSAPP_MAX_LIST_ENTRIES) {
+          sceFiosDHCloseSync(NULL, dh);
+          fileListEmpty(list);
+          return VITASHELL_ERROR_NO_MEMORY;
+        }
+        FileListEntry *entry = fileListCreateEntry(name, stat.statFlags & 0x1);
+        if (!entry) {
+          sceFiosDHCloseSync(NULL, dh);
+          fileListEmpty(list);
+          return VITASHELL_ERROR_NO_MEMORY;
+        }
+        {
+          if (entry->is_folder) list->folders++; else list->files++;
           entry->size = stat.fileSize;
           
           SceDateTime time;
@@ -287,6 +288,7 @@ int fileListGetPsarcEntries(FileList *list, const char *path, int sort) {
 }
 
 int getPsarcPathInfo(const char *path, uint64_t *size, uint32_t *folders, uint32_t *files, int (* handler)(const char *path)) {
+  if (sceKernelGetThreadStackFreeSize(0) < 16 * 1024) return VITASHELL_ERROR_NO_MEMORY;
   SceFiosDH dh = -1;
   SceFiosBuffer buf = SCE_FIOS_BUFFER_INITIALIZER;
   if (sceFiosDHOpenSync(NULL, &dh, path, buf) >= 0) {
@@ -300,7 +302,11 @@ int getPsarcPathInfo(const char *path, uint64_t *size, uint32_t *folders, uint32
       if (res >= 0) {
         char *name = dir.fullPath + dir.offsetToName;
         
+        if (strlen(path) + strlen(name) + 2 > MAX_PATH_LENGTH) { sceFiosDHCloseSync(NULL, dh); return VITASHELL_ERROR_INVALID_ARGUMENT; }
+
         char *new_path = malloc(strlen(path) + strlen(name) + 2);
+
+        if (!new_path) { sceFiosDHCloseSync(NULL, dh); return VITASHELL_ERROR_NO_MEMORY; }
         snprintf(new_path, MAX_PATH_LENGTH, "%s%s%s", path, hasEndSlash(path) ? "" : "/", name);
 
         if (handler && handler(new_path)) {
@@ -358,13 +364,16 @@ int extractPsarcFile(const char *src_path, const char *dst_path, FileProcessPara
   if (fdsrc < 0)
     return fdsrc;
 
+  void *buf = memalign(4096, TRANSFER_SIZE);
+  if (!buf) { psarcFileClose(fdsrc); return VITASHELL_ERROR_NO_MEMORY; }
+
   SceUID fddst = sceIoOpen(dst_path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
   if (fddst < 0) {
+    free(buf);
     psarcFileClose(fdsrc);
     return fddst;
   }
 
-  void *buf = memalign(4096, TRANSFER_SIZE);
 
   while (1) {
     int read = psarcFileRead(fdsrc, buf, TRANSFER_SIZE);
@@ -425,6 +434,7 @@ int extractPsarcFile(const char *src_path, const char *dst_path, FileProcessPara
 }
 
 int extractPsarcPath(const char *src_path, const char *dst_path, FileProcessParam *param) {
+  if (sceKernelGetThreadStackFreeSize(0) < 16 * 1024) return VITASHELL_ERROR_NO_MEMORY;
   SceFiosDH dh = -1;
   SceFiosBuffer buf = SCE_FIOS_BUFFER_INITIALIZER;
   if (sceFiosDHOpenSync(NULL, &dh, src_path, buf) >= 0) {
@@ -457,10 +467,18 @@ int extractPsarcPath(const char *src_path, const char *dst_path, FileProcessPara
       if (res >= 0) {
         char *name = dir.fullPath + dir.offsetToName;
 
+        if (strlen(src_path) + strlen(name) + 2 > MAX_PATH_LENGTH) { sceFiosDHCloseSync(NULL, dh); return VITASHELL_ERROR_INVALID_ARGUMENT; }
+
         char *new_src_path = malloc(strlen(src_path) + strlen(name) + 2);
+
+        if (!new_src_path) { sceFiosDHCloseSync(NULL, dh); return VITASHELL_ERROR_NO_MEMORY; }
         snprintf(new_src_path, MAX_PATH_LENGTH, "%s%s%s", src_path, hasEndSlash(src_path) ? "" : "/", name);
 
+        if (strlen(dst_path) + strlen(name) + 2 > MAX_PATH_LENGTH) { free(new_src_path); sceFiosDHCloseSync(NULL, dh); return VITASHELL_ERROR_INVALID_ARGUMENT; }
+
         char *new_dst_path = malloc(strlen(dst_path) + strlen(name) + 2);
+
+        if (!new_dst_path) { free(new_src_path); sceFiosDHCloseSync(NULL, dh); return VITASHELL_ERROR_NO_MEMORY; }
         snprintf(new_dst_path, MAX_PATH_LENGTH, "%s%s%s", dst_path, hasEndSlash(dst_path) ? "" : "/", name);
 
         int ret = 0;
